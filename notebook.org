@@ -1,0 +1,857 @@
+#+TITLE: Asok Gems and How to Polish Them
+#+AUTHOR: Marcel Lauhoff
+#+OPTIONS: H:4 toc:2 num:nil
+#+PROPERTY: header-args :noweb no-export
+#+PROPERTY: header-args :var source="/compile2/ceph/wip"
+#+PROPERTY: header-args+ :var build="/compile2/ceph/wip/build"
+#+PROPERTY: header-args+ :var out="/compile2/ceph/wip/build/out"
+#+PROPERTY: header-args+ :var asok="/compile2/ceph/wip/build/asok"
+#+PROPERTY: header-args+ :var ceph_config="/compile2/ceph/wip/build/ceph.conf"
+#+PROPERTY: header-args+ :var run_id="297838a4-5a65-4c97-a708-43f35c4b1f46"
+
+* Notebook Tools
+#+caption: Convenience snippet. Used by most scripts later on. Re-evaluate when restarting the cluster.
+#+name: env
+#+begin_src bash
+source  $build/vstart_environment.sh
+#+end_src
+
+#+RESULTS: env
+
+#+caption: Functions to get lists of Ceph daemons
+#+name: get_daemons
+#+begin_src bash
+mons () {
+    ceph -f json mon dump 2>/dev/null | jq -r '"mon.\(.mons[].name)"'
+}
+osds () {
+    ceph -f json osd dump 2>/dev/null | jq -r '"osd.\(.osds[].osd)"'
+}
+mgrs () {
+    ceph -f json mgr dump 2>/dev/null | jq -r '"mgr.\(.active_name)"'
+}
+
+ceph_daemons () {
+    mons
+    osds
+    mgrs
+}
+#+end_src
+
+#+RESULTS: get_daemons
+
+* How to Access Admin Sockets
+** UNIX Socket Protocol
+The protocol is JSON over a UNIX Socket.
+
+#+begin_src json
+{"prefix": "help", "format": "json-pretty"}
+#+end_src
+
+We can simply send that with netcat.
+
+#+begin_src bash  :results output verbatim
+echo '{"prefix": "help", "format": "json-pretty"}' | nc -U $out/radosgw.8000.asok | tail -c+5
+#+end_src
+
+#+RESULTS:
+#+begin_example
+{
+    "cache erase": "cache erase target: erase element from cache",
+    "cache inspect": "cache inspect target: print cache element",
+    "cache list": "cache list [filter_str]: list object cache, possibly matching substrings",
+    "cache zap": "cache zap: erase all elements from cache",
+    "config diff": "dump diff of current config and default config",
+    "config diff get": "dump diff get <field>: dump diff of current and default config setting <field>",
+    "config get": "config get <field>: get the config value",
+    "config help": "get config setting schema and descriptions",
+    "config set": "config set <field> <val> [<val> ...]: set a config variable",
+    "config show": "dump current config settings",
+    "config unset": "config unset <field>: unset a config variable",
+    "counter dump": "dump all labeled and non-labeled counters and their values",
+    "counter schema": "dump all labeled and non-labeled counters schemas",
+    "cr dump": "dump current coroutines stack state",
+    "dump_mempools": "get mempool stats",
+    "get_command_descriptions": "list available commands",
+    "git_version": "get git sha1",
+    "help": "list available commands",
+    "injectargs": "inject configuration arguments into running daemon",
+    "log dump": "dump recent log entries to log file",
+    "log flush": "flush log entries to log file",
+    "log reopen": "reopen log file",
+    "messenger dump": "dump messenger status",
+    "objecter_requests": "show in-progress osd requests",
+    "perf dump": "dump non-labeled counters and their values",
+    "perf histogram dump": "dump perf histogram values",
+    "perf histogram schema": "dump perf histogram schema",
+    "perf reset": "perf reset <name>: perf reset all or one perfcounter name",
+    "perf schema": "dump non-labeled counters schemas",
+    "raise": "deliver the <signal> to the daemon process, optionally delaying <after> seconds; when --after is used, the program will fork before sleeping, which allows to schedule signal delivery to a stopped daemon; it's possible to --cancel a pending signal delivery. <signal> can be in the forms '9', '-9', 'kill', '-KILL'. Use `raise -l` to list known signal names.",
+    "rotate-key": "rotate live authentication key",
+    "sync trace active": "show active multisite sync entities information",
+    "sync trace active_short": "show active multisite sync entities entries",
+    "sync trace history": "sync trace history [filter_str]: show history of multisite tracing information",
+    "sync trace show": "sync trace show [filter_str]: show current multisite tracing information",
+    "version": "get ceph version"
+}
+#+end_example
+
+Why did we use =tail -c+5=? There is a binary 4 byte header containing the payload length as an unsigned 32 bit integer:
+
+#+begin_src bash  :results output verbatim
+echo '{"prefix": "help", "format": "json-pretty"}' | nc -U $out/radosgw.8000.asok  | head -c4 | xxd
+#+end_src
+
+#+RESULTS:
+: 00000000: 0000 0a49                                ...I
+
+*** Errors
+Are returned inline as text.
+
+#+begin_src c++
+  // Unfortunately, the asok wire protocol does not let us pass an error code,
+  // and many asok command implementations return helpful error strings.  So,
+  // let's prepend an error string to the output if there is an error code.
+  if (rval < 0) {
+    ostringstream ss;
+    ss << "ERROR: " << cpp_strerror(rval) << "\n";
+    ss << err.str() << "\n";
+    /* ... */
+#+end_src
+
+
+** librados
+Ceph service daemons (osd, mgr, mon) not only open admin sockets,
+but also allow access via librados.
+
+The following code fetches version information from selected Ceph service daemons:
+
+#+begin_src python :results value verbatim
+#!/usr/bin/env python3
+import rados
+import json
+
+cluster = rados.Rados(conffile=ceph_config)
+cluster.connect()
+return ", ".join(json.loads(x)["release"] for x in [
+    cluster.osd_command(osdid=0, cmd='{"prefix": "version"}', inbuf=b"")[1],
+    cluster.mon_command(target="a", cmd='{"prefix": "version"}', inbuf=b"")[1],
+    cluster.mgr_command(target="", cmd='{"prefix": "version"}', inbuf=b"")[1],
+])
+#+end_src
+
+#+RESULTS:
+: tentacle, tentacle, tentacle
+
+** =ceph= tool
+- =ceph daemon $filename= (UNIX Socket)
+- =ceph tell $service= (librados)
+
+** Python Asok Wrapper
+#+name: simpleasok
+#+begin_src python
+#!/usr/bin/env python3
+import rados
+import cephfs
+import json
+import pathlib
+import logging
+from typing import Annotated, Any, Literal, NamedTuple, Optional, Tuple, Union, cast, override
+
+LOG = logging.getLogger("asok")
+CEPH_COMMAND_TIMEOUT_SECONDS = 0
+
+from pydantic import (
+    BaseModel,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    field_validator,
+)
+
+class CephTargetBase(BaseModel):
+    class Config:
+        frozen = True
+
+
+class CephOSDTarget(CephTargetBase):
+    type: Literal["osd"]
+    id: int
+
+    def to_tuple(self):
+        return (self.type, self.id)
+
+    @override
+    def __str__(self) -> str:
+        return f"osd.{self.id}"
+
+
+class CephMonTarget(CephTargetBase):
+    type: Literal["mon"]
+    name: str
+
+    def to_tuple(self):
+        return (self.type, self.name)
+
+    @override
+    def __str__(self) -> str:
+        if self.name:
+            return f"mon.{self.name}"
+        else:
+            return "mon"
+
+
+class CephMgrTarget(CephTargetBase):
+    type: Literal["mgr"]
+    name: str
+
+    def to_tuple(self):
+        return (self.type, self.name)
+
+    @override
+    def __str__(self) -> str:
+        return f"mgr.{self.name}"
+
+
+class CephAsokTarget(CephTargetBase):
+    type: Literal["asok"]
+    path: pathlib.Path
+
+    def to_tuple(self):
+        return (self.type, self.path)
+
+    @override
+    def __str__(self) -> str:
+        return f"ASOK:{self.path}"
+
+class CephMdsTarget(CephTargetBase):
+    type: Literal["mds"]
+    name: str
+
+    def to_tuple(self):
+        return (self.type, self.path)
+
+    @override
+    def __str__(self) -> str:
+        return f"mds.{self.name}"
+
+CephTarget = Annotated[
+    CephOSDTarget | CephMonTarget | CephMgrTarget | CephAsokTarget | CephMdsTarget,
+    Field(discriminator="type"),
+]
+
+ConfigVariant = Union[StrictBool, StrictInt, StrictFloat, StrictStr]
+
+class CephCommandError(Exception):
+    pass
+
+def asok_command(path: pathlib.Path, cmd: str):
+    cmd += "\0"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.connect(path.as_posix())
+        LOG.debug("ASOK: %s --> %s", path, cmd)
+        sock.sendall(cmd.encode("utf-8"))
+        response_bytes = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response_bytes += chunk
+        LOG.debug("ASOK: %s <-- %s", path, response_bytes)
+    if b"ERROR:" in response_bytes:
+        raise CephCommandError(f'Ceph asok command "{cmd}" failed: {response_bytes}')
+    return 0, response_bytes[4:], b""
+
+
+def target_command(
+    target: CephTarget, cluster: rados.Rados, cmd: str
+) -> tuple[str, str]:
+    match target:
+        case CephOSDTarget(type="osd", id=osdid):
+            ret, outs, outbuf = cluster.osd_command(
+                osdid=osdid, cmd=cmd, inbuf=b"", timeout=CEPH_COMMAND_TIMEOUT_SECONDS
+            )
+        case CephMonTarget(type="mon", name=monid):
+            ret, outs, outbuf = cluster.mon_command(
+                cmd=cmd, inbuf=b"", timeout=CEPH_COMMAND_TIMEOUT_SECONDS, target=monid
+            )
+        case CephMgrTarget(type="mgr", name=mgr):
+            ret, outs, outbuf = cluster.mgr_command(
+                cmd=cmd, inbuf=b"", timeout=CEPH_COMMAND_TIMEOUT_SECONDS, target=mgr
+            )
+        case CephMdsTarget(type="mds", name=mds):
+            fs = cephfs.LibCephFS(rados_inst=cluster)
+            fs.init()
+            ret, outs, outbuf = fs.mds_command(
+                mds, cmd, b""
+            )
+            fs.shutdown()
+        case CephAsokTarget(type="asok", path=path):
+            ret, outs, outbuf = asok_command(path, cmd)
+
+    LOG.debug("cmd %r ret: %r", cmd, ret)
+
+    if ret == 0:
+        if isinstance(outs, bytes):
+            outs = outs.decode("utf-8")
+        if isinstance(outbuf, bytes):
+            outbuf = outbuf.decode("utf-8")
+        return outs, outbuf
+    raise CephCommandError(f'Ceph command "{cmd}" failed with {ret}: {outs}')
+
+
+def command_outs(
+    cluster: rados.Rados,
+    target: CephTarget = CephMonTarget(type="mon", name=""),
+    ,**kwargs: Any,
+) -> str:
+    outs, _ = target_command(target, cluster, json.dumps(kwargs))
+    return outs.strip()
+
+
+def command_json(
+    cluster: rados.Rados,
+    target: CephTarget = CephMonTarget(type="mon", name=""),
+    ,**kwargs: Any,
+) -> Any:
+    kwargs["format"] = "json"
+    outs, _ = target_command(target, cluster, json.dumps(kwargs))
+    try:
+        j = json.loads(outs)
+    except json.JSONDecodeError as ex:
+        LOG.error("JSON parse failed: %s", ex, exc_info=True)
+        ex.add_note(outs)
+        raise
+    return j
+
+
+def command_lines(
+    cluster: rados.Rados,
+    target: CephTarget = CephMonTarget(type="mon", name=""),
+    ,**kwargs: Any,
+) -> list[str]:
+    outs, _ = target_command(target, cluster, json.dumps(kwargs))
+    return [line for line in outs.splitlines() if line]
+
+def get_inventory(cluster: rados.Rados) -> dict[str, list[CephTarget]]:
+    fs_dump = command_json(cluster, CephMonTarget(type="mon", name=""), prefix="fs dump")
+    return {
+        "osd": [
+            CephOSDTarget(type="osd", id=int(osd))
+            for osd in command_lines(cluster, prefix="osd ls")
+        ],
+        "mon": [
+            CephMonTarget(type="mon", name=m["name"])
+            for m in command_json(cluster, prefix="mon dump")["mons"]
+        ],
+        "mgr": [
+            CephMgrTarget(
+                type="mgr", name=command_json(cluster, prefix="mgr dump")["active_name"]
+            )
+        ],
+        "mds" :
+            [CephMdsTarget(type="mds", name=info["name"]) for info in fs_dump["standbys"]] +
+            [CephMdsTarget(type="mds", name=info["name"]) for fs in fs_dump["filesystems"] for info in fs["mdsmap"]["info"].values()]
+    }
+
+def connect(conffile: pathlib.Path) -> rados.Rados:
+    cluster = rados.Rados(conffile=conffile.as_posix())
+    cluster.connect()
+    LOG.info("Connected to cluster %s", cluster.get_fsid())
+    return cluster
+#+end_src
+
+#+RESULTS: simpleasok
+: None
+
+#+RESULTS:
+: None
+
+* Treasure Maps, Fallen Trees
+/Operator please/
+
+** How many unique commands are there?
+#+begin_src python :noweb yes :tangle map.py :results value table
+<<simpleasok>>
+from collections import defaultdict
+
+cluster = connect(pathlib.Path(ceph_config))
+unique_commands = set()
+for targets in get_inventory(cluster).values():
+    target = next(iter(targets))
+    h = command_json(cluster, target, prefix="help")
+    for k in h.keys():
+        unique_commands.add(k)
+return len(unique_commands)
+#+end_src
+
+#+RESULTS:
+| 170 |
+
+** How many command per service type?
+#+begin_src python :noweb yes :tangle map.py :results value table
+<<simpleasok>>
+from collections import defaultdict
+
+cluster = connect(pathlib.Path(ceph_config))
+target_commands = defaultdict(lambda :0)
+for targets in get_inventory(cluster).values():
+    target = next(iter(targets))
+    h = command_json(cluster, target, prefix="help")
+    for _ in h:
+        target_commands[target.type] += 1
+return target_commands
+#+end_src
+
+#+RESULTS:
+| osd | 117 |
+| mon |  42 |
+| mgr |  36 |
+| mds |  80 |
+
+** Which command is available where?
+#+begin_src python :noweb yes :tangle map.py :results value table
+<<simpleasok>>
+from collections import defaultdict
+
+cluster = connect(pathlib.Path(ceph_config))
+help = defaultdict(lambda : [set(), str()])
+for targets in get_inventory(cluster).values():
+    target = next(iter(targets))
+    h = command_json(cluster, target, prefix="help")
+    for k, v in h.items():
+        help[k][0].add(target.type)
+        help[k][1] = v
+return [(k, v[0], v[1]) for k, v in help.items()]
+#+end_src
+
+#+RESULTS:
+| bench                                                  | (osd)             | OSD benchmark: write <count> <size>-byte objects(with <obj_size> <obj_num>), (default count=1G default size=4MB). Results in log.                                                                                                                                                                                                                                    |     |
+| bluefs debug_inject_read_zeros                         | (osd)             | Injects 8K zeros into next BlueFS read. Debug only.                                                                                                                                                                                                                                                                                                                  |     |
+| bluefs files list                                      | (osd)             | print files in bluefs                                                                                                                                                                                                                                                                                                                                                |     |
+| bluefs stats                                           | (osd)             | Dump internal statistics for bluefs.                                                                                                                                                                                                                                                                                                                                 |     |
+| bluestore allocator dump block                         | (osd)             | dump allocator free regions                                                                                                                                                                                                                                                                                                                                          |     |
+| bluestore allocator dump bluefs-db                     | (osd)             | dump allocator free regions                                                                                                                                                                                                                                                                                                                                          |     |
+| bluestore allocator dump bluefs-wal                    | (osd)             | dump allocator free regions                                                                                                                                                                                                                                                                                                                                          |     |
+| bluestore allocator fragmentation block                | (osd)             | give allocator fragmentation (0-no fragmentation, 1-absolute fragmentation)                                                                                                                                                                                                                                                                                          |     |
+| bluestore allocator fragmentation bluefs-db            | (osd)             | give allocator fragmentation (0-no fragmentation, 1-absolute fragmentation)                                                                                                                                                                                                                                                                                          |     |
+| bluestore allocator fragmentation bluefs-wal           | (osd)             | give allocator fragmentation (0-no fragmentation, 1-absolute fragmentation)                                                                                                                                                                                                                                                                                          |     |
+| bluestore allocator fragmentation histogram block      | (osd)             | build allocator free regions state histogram                                                                                                                                                                                                                                                                                                                         |     |
+| bluestore allocator fragmentation histogram bluefs-db  | (osd)             | build allocator free regions state histogram                                                                                                                                                                                                                                                                                                                         |     |
+| bluestore allocator fragmentation histogram bluefs-wal | (osd)             | build allocator free regions state histogram                                                                                                                                                                                                                                                                                                                         |     |
+| bluestore allocator score block                        | (osd)             | give score on allocator fragmentation (0-no fragmentation, 1-absolute fragmentation)                                                                                                                                                                                                                                                                                 |     |
+| bluestore allocator score bluefs-db                    | (osd)             | give score on allocator fragmentation (0-no fragmentation, 1-absolute fragmentation)                                                                                                                                                                                                                                                                                 |     |
+| bluestore allocator score bluefs-wal                   | (osd)             | give score on allocator fragmentation (0-no fragmentation, 1-absolute fragmentation)                                                                                                                                                                                                                                                                                 |     |
+| bluestore bluefs device info                           | (osd)             | Shows space report for bluefs devices. This also includes an estimation for space available to bluefs at main device. alloc_size, if set, specifies the custom bluefs allocation unit size for the estimation above.                                                                                                                                                 |     |
+| bluestore collections                                  | (osd)             | list all collections                                                                                                                                                                                                                                                                                                                                                 |     |
+| bluestore compression stats                            | (osd)             | print compression stats, per collection                                                                                                                                                                                                                                                                                                                              |     |
+| bluestore list                                         | (osd)             | list objects in specific collection                                                                                                                                                                                                                                                                                                                                  |     |
+| bluestore onode metadata                               | (osd)             | print object internals                                                                                                                                                                                                                                                                                                                                               |     |
+| cache drop                                             | (osd mds)         | trim cache and optionally request client to release all caps and flush the journal                                                                                                                                                                                                                                                                                   |     |
+| cache status                                           | (osd mds)         | show cache status                                                                                                                                                                                                                                                                                                                                                    |     |
+| calc_objectstore_db_histogram                          | (osd)             | Generate key value histogram of kvdb(rocksdb) which used by bluestore                                                                                                                                                                                                                                                                                                |     |
+| clear_shards_repaired                                  | (osd)             | clear num_shards_repaired to clear health warning                                                                                                                                                                                                                                                                                                                    |     |
+| cluster_log                                            | (osd)             | log a message to the cluster log                                                                                                                                                                                                                                                                                                                                     |     |
+| compact                                                | (osd mon)         | cause compaction of monitor's RocksDB storage                                                                                                                                                                                                                                                                                                                        |     |
+| config diff                                            | (mgr osd mon mds) | dump diff of current config and default config                                                                                                                                                                                                                                                                                                                       |     |
+| config diff get                                        | (mgr osd mon mds) | dump diff get <field>: dump diff of current and default config setting <field>                                                                                                                                                                                                                                                                                       |     |
+| config get                                             | (mgr osd mon mds) | config get <field>: get the config value                                                                                                                                                                                                                                                                                                                             |     |
+| config help                                            | (mgr osd mon mds) | get config setting schema and descriptions                                                                                                                                                                                                                                                                                                                           |     |
+| config set                                             | (mgr osd mon mds) | config set <field> <val> [<val> ...]: set a config variable                                                                                                                                                                                                                                                                                                          |     |
+| config show                                            | (mgr osd mon mds) | dump current config settings                                                                                                                                                                                                                                                                                                                                         |     |
+| config unset                                           | (mgr osd mon mds) | config unset <field>: unset a config variable                                                                                                                                                                                                                                                                                                                        |     |
+| counter dump                                           | (mgr osd mon mds) | dump all labeled and non-labeled counters and their values                                                                                                                                                                                                                                                                                                           |     |
+| counter schema                                         | (mgr osd mon mds) | dump all labeled and non-labeled counters schemas                                                                                                                                                                                                                                                                                                                    |     |
+| cpu_profiler                                           | (osd mds)         | run cpu profiling on daemon                                                                                                                                                                                                                                                                                                                                          |     |
+| debug dump_missing                                     | (osd)             | dump missing objects to a named file                                                                                                                                                                                                                                                                                                                                 |     |
+| debug kick_recovery_wq                                 | (osd)             | set osd_recovery_delay_start to <val>                                                                                                                                                                                                                                                                                                                                |     |
+| deep-scrub                                             | (osd)             | Trigger a deep scrub                                                                                                                                                                                                                                                                                                                                                 |     |
+| dump_blocked_ops                                       | (osd mgr mds)     | show the blocked ops currently in flight                                                                                                                                                                                                                                                                                                                             |     |
+| dump_blocked_ops_count                                 | (osd mgr mds)     | show the count of blocked ops currently in flight                                                                                                                                                                                                                                                                                                                    |     |
+| dump_blocklist                                         | (osd)             | dump blocklisted clients and times                                                                                                                                                                                                                                                                                                                                   |     |
+| dump_historic_ops                                      | (mgr osd mon mds) | show recent ops                                                                                                                                                                                                                                                                                                                                                      |     |
+| dump_historic_ops_by_duration                          | (mgr osd mon mds) | show recent ops, sorted by op duration                                                                                                                                                                                                                                                                                                                               |     |
+| dump_historic_slow_ops                                 | (mgr osd mon)     | show slowest recent ops                                                                                                                                                                                                                                                                                                                                              |     |
+| dump_mempools                                          | (mgr osd mon mds) | get mempool stats                                                                                                                                                                                                                                                                                                                                                    |     |
+| dump_objectstore_kv_stats                              | (osd)             | print statistics of kvdb which used by bluestore                                                                                                                                                                                                                                                                                                                     |     |
+| dump_op_pq_state                                       | (osd)             | dump op queue state                                                                                                                                                                                                                                                                                                                                                  |     |
+| dump_ops_in_flight                                     | (mgr osd mon mds) | show the ops currently in flight                                                                                                                                                                                                                                                                                                                                     |     |
+| dump_osd_network                                       | (osd mgr)         | Dump osd heartbeat network ping times                                                                                                                                                                                                                                                                                                                                |     |
+| dump_osd_pg_stats                                      | (osd)             | Dump OSD PGs' statistics                                                                                                                                                                                                                                                                                                                                             |     |
+| dump_pg_recovery_stats                                 | (osd)             | dump pg recovery statistics                                                                                                                                                                                                                                                                                                                                          |     |
+| dump_pgstate_history                                   | (osd)             | show recent state history                                                                                                                                                                                                                                                                                                                                            |     |
+| dump_pool_statfs                                       | (osd)             | Dump store's statistics for the given pool                                                                                                                                                                                                                                                                                                                           |     |
+| dump_recovery_reservations                             | (osd)             | show recovery reservations                                                                                                                                                                                                                                                                                                                                           |     |
+| dump_scrub_reservations                                | (osd)             | show scrub reservations                                                                                                                                                                                                                                                                                                                                              |     |
+| dump_scrubs                                            | (osd)             | print scheduled scrubs                                                                                                                                                                                                                                                                                                                                               |     |
+| dump_watchers                                          | (osd)             | show clients which have active watches, and on which objects                                                                                                                                                                                                                                                                                                         |     |
+| flush_journal                                          | (osd)             | flush the journal to permanent store                                                                                                                                                                                                                                                                                                                                 |     |
+| flush_pg_stats                                         | (osd)             | flush pg stats                                                                                                                                                                                                                                                                                                                                                       |     |
+| flush_store_cache                                      | (osd)             | Flush bluestore internal cache                                                                                                                                                                                                                                                                                                                                       |     |
+| get_command_descriptions                               | (mgr osd mon mds) | list available commands                                                                                                                                                                                                                                                                                                                                              |     |
+| get_heap_property                                      | (osd)             | get malloc extension heap property                                                                                                                                                                                                                                                                                                                                   |     |
+| get_latest_osdmap                                      | (osd)             | force osd to update the latest map from the mon                                                                                                                                                                                                                                                                                                                      |     |
+| get_mapped_pools                                       | (osd)             | dump pools whose PG(s) are mapped to this OSD.                                                                                                                                                                                                                                                                                                                       |     |
+| getomap                                                | (osd)             | output entire object map                                                                                                                                                                                                                                                                                                                                             |     |
+| git_version                                            | (mgr osd mon mds) | get git sha1                                                                                                                                                                                                                                                                                                                                                         |     |
+| heap                                                   | (osd mon mds)     | show heap usage info (available only if compiled with tcmalloc)                                                                                                                                                                                                                                                                                                      |     |
+| help                                                   | (mgr osd mon mds) | list available commands                                                                                                                                                                                                                                                                                                                                              |     |
+| injectargs                                             | (mgr osd mon mds) | inject configuration arguments into running daemon                                                                                                                                                                                                                                                                                                                   |     |
+| injectclearparityread                                  | (osd)             | Clear a parity read inject                                                                                                                                                                                                                                                                                                                                           |     |
+| injectdataerr                                          | (osd)             | inject data error to an object                                                                                                                                                                                                                                                                                                                                       |     |
+| injectecclearreaderr                                   | (osd)             | clear read error injects for object in an EC pool                                                                                                                                                                                                                                                                                                                    |     |
+| injectecclearwriteerr                                  | (osd)             | clear write error inject for object in an EC pool                                                                                                                                                                                                                                                                                                                    |     |
+| injectecreaderr                                        | (osd)             | inject error for read of object in an EC pool                                                                                                                                                                                                                                                                                                                        |     |
+| injectecwriteerr                                       | (osd)             | inject error for write of object in an EC pool                                                                                                                                                                                                                                                                                                                       |     |
+| injectfull                                             | (osd)             | Inject a full disk (optional count times)                                                                                                                                                                                                                                                                                                                            |     |
+| injectmdataerr                                         | (osd)             | inject metadata error to an object                                                                                                                                                                                                                                                                                                                                   |     |
+| injectparityread                                       | (osd)             | Tell the OSD to return the parity chunks along with the next read                                                                                                                                                                                                                                                                                                    |     |
+| list_devices                                           | (osd)             | list OSD devices.                                                                                                                                                                                                                                                                                                                                                    |     |
+| list_unfound                                           | (osd)             | list unfound objects on this pg, perhaps starting at an offset given in JSON                                                                                                                                                                                                                                                                                         |     |
+| log                                                    | (osd)             | dump pg_log of a specific pg                                                                                                                                                                                                                                                                                                                                         |     |
+| log dump                                               | (mgr osd mon mds) | dump recent log entries to log file                                                                                                                                                                                                                                                                                                                                  |     |
+| log flush                                              | (mgr osd mon mds) | flush log entries to log file                                                                                                                                                                                                                                                                                                                                        |     |
+| log reopen                                             | (mgr osd mon mds) | reopen log file                                                                                                                                                                                                                                                                                                                                                      |     |
+| mark_unfound_lost                                      | (osd)             | mark all unfound objects in this pg as lost, either removing or reverting to a prior version if one is available                                                                                                                                                                                                                                                     |     |
+| messenger dump                                         | (mgr osd mon mds) | dump messenger status                                                                                                                                                                                                                                                                                                                                                |     |
+| objecter_requests                                      | (osd mgr)         | show in-progress osd requests                                                                                                                                                                                                                                                                                                                                        |     |
+| ops                                                    | (osd mon mds)     | show the ops currently in flight                                                                                                                                                                                                                                                                                                                                     |     |
+| perf dump                                              | (mgr osd mon mds) | dump non-labeled counters and their values                                                                                                                                                                                                                                                                                                                           |     |
+| perf histogram dump                                    | (mgr osd mon mds) | dump perf histogram values                                                                                                                                                                                                                                                                                                                                           |     |
+| perf histogram schema                                  | (mgr osd mon mds) | dump perf histogram schema                                                                                                                                                                                                                                                                                                                                           |     |
+| perf reset                                             | (mgr osd mon mds) | perf reset <name>: perf reset all or one perfcounter name                                                                                                                                                                                                                                                                                                            |     |
+| perf schema                                            | (mgr osd mon mds) | dump non-labeled counters schemas                                                                                                                                                                                                                                                                                                                                    |     |
+| query                                                  | (osd)             | show details of a specific pg                                                                                                                                                                                                                                                                                                                                        |     |
+| raise                                                  | (mgr osd mon mds) | deliver the <signal> to the daemon process, optionally delaying <after> seconds; when --after is used, the program will fork before sleeping, which allows to schedule signal delivery to a stopped daemon; it's possible to --cancel a pending signal delivery. <signal> can be in the forms '9', '-9', 'kill', '-KILL'. Use `raise -l` to list known signal names. |     |
+| reset_pg_recovery_stats                                | (osd)             | reset pg recovery statistics                                                                                                                                                                                                                                                                                                                                         |     |
+| reset_purged_snaps_last                                | (osd)             | Reset the superblock's purged_snaps_last                                                                                                                                                                                                                                                                                                                             |     |
+| rmomapkey                                              | (osd)             | remove omap key                                                                                                                                                                                                                                                                                                                                                      |     |
+| rotate-key                                             | (osd mgr mds)     | rotate live authentication key                                                                                                                                                                                                                                                                                                                                       |     |
+| rotate-stored-key                                      | (osd)             | Update the stored osd_key                                                                                                                                                                                                                                                                                                                                            |     |
+| schedule-deep-scrub                                    | (osd)             | Schedule a deep scrub                                                                                                                                                                                                                                                                                                                                                |     |
+| schedule-scrub                                         | (osd)             | Schedule a scrub                                                                                                                                                                                                                                                                                                                                                     |     |
+| scrub                                                  | (osd)             | Trigger a scrub                                                                                                                                                                                                                                                                                                                                                      |     |
+| scrub_purged_snaps                                     | (osd)             | Scrub purged_snaps vs snapmapper index                                                                                                                                                                                                                                                                                                                               |     |
+| scrubdebug                                             | (osd)             | debug the scrubber                                                                                                                                                                                                                                                                                                                                                   |     |
+| send_beacon                                            | (osd)             | send OSD beacon to mon immediately                                                                                                                                                                                                                                                                                                                                   |     |
+| set_heap_property                                      | (osd)             | update malloc extension heap property                                                                                                                                                                                                                                                                                                                                |     |
+| set_recovery_delay                                     | (osd)             | Delay osd recovery by specified seconds                                                                                                                                                                                                                                                                                                                              |     |
+| setomapheader                                          | (osd)             | set omap header                                                                                                                                                                                                                                                                                                                                                      |     |
+| setomapval                                             | (osd)             | set omap key                                                                                                                                                                                                                                                                                                                                                         |     |
+| smart                                                  | (osd mon)         | Query health metrics for underlying device                                                                                                                                                                                                                                                                                                                           |     |
+| status                                                 | (osd mgr mds)     | high-level status of MDS                                                                                                                                                                                                                                                                                                                                             |     |
+| trim stale osdmaps                                     | (osd)             | cleanup any existing osdmap from the store in the range of 0 up to the superblock's oldest_map.                                                                                                                                                                                                                                                                      |     |
+| truncobj                                               | (osd)             | truncate object to length                                                                                                                                                                                                                                                                                                                                            |     |
+| version                                                | (mgr osd mon mds) | get ceph version                                                                                                                                                                                                                                                                                                                                                     |     |
+| add_bootstrap_peer_hint                                | (mon)             | add peer address as potential bootstrap peer for cluster bringup                                                                                                                                                                                                                                                                                                     |     |
+| add_bootstrap_peer_hintv                               | (mon)             | add peer address vector as potential bootstrap peer for cluster bringup                                                                                                                                                                                                                                                                                              |     |
+| connection scores dump                                 | (mon)             | show the scores used in connectivity-based elections                                                                                                                                                                                                                                                                                                                 |     |
+| connection scores reset                                | (mon)             | reset the scores used in connectivity-based elections                                                                                                                                                                                                                                                                                                                |     |
+| mon_status                                             | (mon)             | report status of monitors                                                                                                                                                                                                                                                                                                                                            |     |
+| quorum enter                                           | (mon)             | force monitor back into quorum                                                                                                                                                                                                                                                                                                                                       |     |
+| quorum exit                                            | (mon)             | force monitor out of the quorum                                                                                                                                                                                                                                                                                                                                      |     |
+| sessions                                               | (mon)             | list existing sessions                                                                                                                                                                                                                                                                                                                                               |     |
+| sync_force                                             | (mon)             | force sync of and clear monitor store                                                                                                                                                                                                                                                                                                                                |     |
+| mgr_status                                             | (mgr)             | Dump mgr status                                                                                                                                                                                                                                                                                                                                                      |     |
+| client config                                          | (mds)             | Config a CephFS client session                                                                                                                                                                                                                                                                                                                                       |     |
+| client evict                                           | (mds)             | Evict client session(s) based on a filter                                                                                                                                                                                                                                                                                                                            |     |
+| client ls                                              | (mds)             | List client sessions based on a filter                                                                                                                                                                                                                                                                                                                               |     |
+| damage ls                                              | (mds)             | List detected metadata damage                                                                                                                                                                                                                                                                                                                                        |     |
+| damage rm                                              | (mds)             | Remove a damage table entry                                                                                                                                                                                                                                                                                                                                          |     |
+| dirfrag ls                                             | (mds)             | List fragments in directory                                                                                                                                                                                                                                                                                                                                          |     |
+| dirfrag merge                                          | (mds)             | De-fragment directory by path                                                                                                                                                                                                                                                                                                                                        |     |
+| dirfrag split                                          | (mds)             | Fragment directory by path                                                                                                                                                                                                                                                                                                                                           |     |
+| dump cache                                             | (mds)             | dump metadata cache (optionally to a file)                                                                                                                                                                                                                                                                                                                           |     |
+| dump dir                                               | (mds)             | dump directory by path                                                                                                                                                                                                                                                                                                                                               |     |
+| dump inode                                             | (mds)             | dump inode by inode number                                                                                                                                                                                                                                                                                                                                           |     |
+| dump loads                                             | (mds)             | dump metadata loads                                                                                                                                                                                                                                                                                                                                                  |     |
+| dump snaps                                             | (mds)             | dump snapshots                                                                                                                                                                                                                                                                                                                                                       |     |
+| dump stray                                             | (mds)             | dump stray folder content                                                                                                                                                                                                                                                                                                                                            |     |
+| dump tree                                              | (mds)             | dump metadata cache for subtree                                                                                                                                                                                                                                                                                                                                      |     |
+| dump_export_states                                     | (mds)             | dump export states                                                                                                                                                                                                                                                                                                                                                   |     |
+| exit                                                   | (mds)             | Terminate this MDS                                                                                                                                                                                                                                                                                                                                                   |     |
+| export dir                                             | (mds)             | migrate a subtree to named MDS                                                                                                                                                                                                                                                                                                                                       |     |
+| flush journal                                          | (mds)             | Flush the journal to the backing store                                                                                                                                                                                                                                                                                                                               |     |
+| flush_path                                             | (mds)             | flush an inode (and its dirfrags)                                                                                                                                                                                                                                                                                                                                    |     |
+| force_readonly                                         | (mds)             | Force MDS to read-only mode                                                                                                                                                                                                                                                                                                                                          |     |
+| get subtrees                                           | (mds)             | Return the subtree map                                                                                                                                                                                                                                                                                                                                               |     |
+| lock path                                              | (mds)             | lock a path                                                                                                                                                                                                                                                                                                                                                          |     |
+| lockup                                                 | (mds)             | sleep with mds_lock held (dev)                                                                                                                                                                                                                                                                                                                                       |     |
+| op get                                                 | (mds)             | get op                                                                                                                                                                                                                                                                                                                                                               |     |
+| op kill                                                | (mds)             | kill op                                                                                                                                                                                                                                                                                                                                                              |     |
+| openfiles ls                                           | (mds)             | List the opening files and their caps                                                                                                                                                                                                                                                                                                                                |     |
+| osdmap barrier                                         | (mds)             | Wait until the MDS has this OSD map epoch                                                                                                                                                                                                                                                                                                                            |     |
+| quiesce db                                             | (mds)             | submit queries to the local QuiesceDbManager                                                                                                                                                                                                                                                                                                                         |     |
+| quiesce path                                           | (mds)             | quiesce a subtree                                                                                                                                                                                                                                                                                                                                                    |     |
+| respawn                                                | (mds)             | Respawn this MDS                                                                                                                                                                                                                                                                                                                                                     |     |
+| scrub abort                                            | (mds)             | Abort in progress scrub operations(s)                                                                                                                                                                                                                                                                                                                                |     |
+| scrub pause                                            | (mds)             | Pause in progress scrub operations(s)                                                                                                                                                                                                                                                                                                                                |     |
+| scrub purge_status                                     | (mds)             | Purge status of scrub tag                                                                                                                                                                                                                                                                                                                                            | all |
+| scrub resume                                           | (mds)             | Resume paused scrub operations(s)                                                                                                                                                                                                                                                                                                                                    |     |
+| scrub start                                            | (mds)             | scrub and inode and output results                                                                                                                                                                                                                                                                                                                                   |     |
+| scrub status                                           | (mds)             | Status of scrub operations(s)                                                                                                                                                                                                                                                                                                                                        |     |
+| scrub_path                                             | (mds)             | scrub an inode and output results                                                                                                                                                                                                                                                                                                                                    |     |
+| session config                                         | (mds)             | Config a CephFS client session                                                                                                                                                                                                                                                                                                                                       |     |
+| session evict                                          | (mds)             | Evict client session(s) based on a filter                                                                                                                                                                                                                                                                                                                            |     |
+| session kill                                           | (mds)             | Evict a client session by id                                                                                                                                                                                                                                                                                                                                         |     |
+| session ls                                             | (mds)             | List client sessions based on a filter                                                                                                                                                                                                                                                                                                                               |     |
+| tag path                                               | (mds)             | Apply scrub tag recursively                                                                                                                                                                                                                                                                                                                                          |     |
+
+** What commands are available on all services?
+#+begin_src python :noweb yes :tangle map.py
+<<simpleasok>>
+from collections import defaultdict
+
+cluster = connect(pathlib.Path(ceph_config))
+help = defaultdict(lambda : [set(), str()])
+for targets in get_inventory(cluster).values():
+    target = next(iter(targets))
+    h = command_json(cluster, target, prefix="help")
+    for k, v in h.items():
+        help[k][0].add(target.type)
+        help[k][1] = v
+return [(k, v[0], v[1]) for k, v in help.items() if len(v[0]) == 4]
+#+end_src
+
+#+RESULTS:
+| config diff                   | (osd mon mds mgr) | dump diff of current config and default config                                                                                                                                                                                                                                                                                                                       |
+| config diff get               | (osd mon mds mgr) | dump diff get <field>: dump diff of current and default config setting <field>                                                                                                                                                                                                                                                                                       |
+| config get                    | (osd mon mds mgr) | config get <field>: get the config value                                                                                                                                                                                                                                                                                                                             |
+| config help                   | (osd mon mds mgr) | get config setting schema and descriptions                                                                                                                                                                                                                                                                                                                           |
+| config set                    | (osd mon mds mgr) | config set <field> <val> [<val> ...]: set a config variable                                                                                                                                                                                                                                                                                                          |
+| config show                   | (osd mon mds mgr) | dump current config settings                                                                                                                                                                                                                                                                                                                                         |
+| config unset                  | (osd mon mds mgr) | config unset <field>: unset a config variable                                                                                                                                                                                                                                                                                                                        |
+| counter dump                  | (osd mon mds mgr) | dump all labeled and non-labeled counters and their values                                                                                                                                                                                                                                                                                                           |
+| counter schema                | (osd mon mds mgr) | dump all labeled and non-labeled counters schemas                                                                                                                                                                                                                                                                                                                    |
+| dump_historic_ops             | (osd mon mds mgr) | show recent ops                                                                                                                                                                                                                                                                                                                                                      |
+| dump_historic_ops_by_duration | (osd mon mds mgr) | show recent ops, sorted by op duration                                                                                                                                                                                                                                                                                                                               |
+| dump_mempools                 | (osd mon mds mgr) | get mempool stats                                                                                                                                                                                                                                                                                                                                                    |
+| dump_ops_in_flight            | (osd mon mds mgr) | show the ops currently in flight                                                                                                                                                                                                                                                                                                                                     |
+| get_command_descriptions      | (osd mon mds mgr) | list available commands                                                                                                                                                                                                                                                                                                                                              |
+| git_version                   | (osd mon mds mgr) | get git sha1                                                                                                                                                                                                                                                                                                                                                         |
+| help                          | (osd mon mds mgr) | list available commands                                                                                                                                                                                                                                                                                                                                              |
+| injectargs                    | (osd mon mds mgr) | inject configuration arguments into running daemon                                                                                                                                                                                                                                                                                                                   |
+| log dump                      | (osd mon mds mgr) | dump recent log entries to log file                                                                                                                                                                                                                                                                                                                                  |
+| log flush                     | (osd mon mds mgr) | flush log entries to log file                                                                                                                                                                                                                                                                                                                                        |
+| log reopen                    | (osd mon mds mgr) | reopen log file                                                                                                                                                                                                                                                                                                                                                      |
+| messenger dump                | (osd mon mds mgr) | dump messenger status                                                                                                                                                                                                                                                                                                                                                |
+| perf dump                     | (osd mon mds mgr) | dump non-labeled counters and their values                                                                                                                                                                                                                                                                                                                           |
+| perf histogram dump           | (osd mon mds mgr) | dump perf histogram values                                                                                                                                                                                                                                                                                                                                           |
+| perf histogram schema         | (osd mon mds mgr) | dump perf histogram schema                                                                                                                                                                                                                                                                                                                                           |
+| perf reset                    | (osd mon mds mgr) | perf reset <name>: perf reset all or one perfcounter name                                                                                                                                                                                                                                                                                                            |
+| perf schema                   | (osd mon mds mgr) | dump non-labeled counters schemas                                                                                                                                                                                                                                                                                                                                    |
+| raise                         | (osd mon mds mgr) | deliver the <signal> to the daemon process, optionally delaying <after> seconds; when --after is used, the program will fork before sleeping, which allows to schedule signal delivery to a stopped daemon; it's possible to --cancel a pending signal delivery. <signal> can be in the forms '9', '-9', 'kill', '-KILL'. Use `raise -l` to list known signal names. |
+| version                       | (osd mon mds mgr) | get ceph version                                                                                                                                                                                                                                                                                                                                                     |
+** Visualization: Intersection Diagram
+#+begin_src python :noweb yes :file "./intersection.svg" :results graphics file value
+<<simpleasok>>
+
+from collections import defaultdict
+from collections import Counter
+from operator import itemgetter
+from functools import reduce
+from itertools import combinations
+import matplotlib.pyplot as plt
+
+plt.style.use('tableau-colorblind10')
+
+cluster = connect(pathlib.Path(ceph_config))
+by_target_type = defaultdict(set)
+for targets in get_inventory(cluster).values():
+    target = next(iter(targets))
+    h = command_json(cluster, target, prefix="help")
+    for k, v in h.items():
+        by_target_type[target.type].add(k)
+
+sets = [(type, len(cmds)) for type, cmds in by_target_type.items()]
+
+keys = list(by_target_type.keys())
+for intersections in range(2, len(keys)+1):
+    for comb in combinations(keys, intersections):
+        inter = reduce(set.intersection, (by_target_type[c] for c in comb))
+        name = " ∩ ".join(comb)
+        sets.append((name, len(inter)))
+sets = sorted(sets, key=itemgetter(1), reverse=True)
+
+fig, ax = plt.subplots()
+ax.bar(range(len(sets)), list(map(itemgetter(1), sets)))
+ax.set_xticks(range(len(sets)), list(map(itemgetter(0), sets)), rotation=45, ha="right")
+ax.set_ylabel("Items in exact combination")
+fig.patch.set_alpha(0)
+ax.patch.set_alpha(0)
+plt.tight_layout()
+return fig
+#+end_src
+
+#+RESULTS:
+[[file:./intersection.svg]]
+
+** Intersections
+#+begin_src python :noweb yes
+<<simpleasok>>
+
+from collections import defaultdict
+from collections import Counter
+from operator import itemgetter
+from functools import reduce
+from itertools import combinations
+import matplotlib.pyplot as plt
+
+plt.style.use('tableau-colorblind10')
+
+cluster = connect(pathlib.Path(ceph_config))
+by_target_type = defaultdict(set)
+for targets in get_inventory(cluster).values():
+    target = next(iter(targets))
+    h = command_json(cluster, target, prefix="help")
+    for k, v in h.items():
+        by_target_type[target.type].add(k)
+
+common = reduce(set.intersection, (by_target_type[c] for c in by_target_type.keys()))
+sets = []
+
+keys = list(by_target_type.keys())
+for intersections in range(2, len(keys)+1):
+    for comb in combinations(keys, intersections):
+        inter = reduce(set.intersection, (by_target_type[c] for c in comb))
+        name = " ∩ ".join(comb)
+        sets.append((name, len(inter), ", ".join(inter)))
+
+for comb in combinations(keys, 2):
+    inter = reduce(set.intersection, (by_target_type[c] for c in comb))
+    minus_common = inter - common
+    name = " ∩ ".join(comb) + " \\ intersection of all"
+    sets.append((name, len(minus_common), ", ".join(minus_common)))
+sets = sorted(sets, key=itemgetter(1), reverse=True)
+return sets
+#+end_src
+
+#+RESULTS:
+| osd ∩ mds                       | 37 | config diff get, git_version, config set, version, log reopen, cache drop, raise, log dump, config help, ops, perf reset, counter schema, perf dump, cache status, messenger dump, dump_blocked_ops_count, perf schema, injectargs, cpu_profiler, perf histogram schema, dump_historic_ops, log flush, counter dump, dump_blocked_ops, perf histogram dump, rotate-key, status, help, config unset, dump_historic_ops_by_duration, dump_mempools, config get, config show, config diff, dump_ops_in_flight, heap, get_command_descriptions           |
+| osd ∩ mgr                       | 35 | dump_historic_slow_ops, config diff get, git_version, config set, version, dump_osd_network, log reopen, raise, log dump, config help, perf reset, counter schema, perf dump, dump_blocked_ops_count, messenger dump, perf schema, injectargs, perf histogram schema, dump_historic_ops, log flush, counter dump, dump_blocked_ops, objecter_requests, perf histogram dump, rotate-key, help, status, config unset, dump_historic_ops_by_duration, dump_mempools, config get, config show, config diff, dump_ops_in_flight, get_command_descriptions |
+| osd ∩ mon                       | 33 | dump_historic_slow_ops, config diff get, git_version, config set, version, log reopen, raise, log dump, config help, ops, perf reset, compact, counter schema, perf dump, messenger dump, perf schema, injectargs, perf histogram schema, dump_historic_ops, log flush, counter dump, perf histogram dump, help, config unset, dump_historic_ops_by_duration, dump_mempools, config get, smart, config show, config diff, dump_ops_in_flight, heap, get_command_descriptions                                                                         |
+| mgr ∩ mds                       | 32 | config diff get, git_version, config set, version, log reopen, raise, log dump, config help, perf reset, counter schema, perf dump, dump_blocked_ops_count, messenger dump, perf schema, injectargs, perf histogram schema, dump_historic_ops, log flush, counter dump, dump_blocked_ops, perf histogram dump, rotate-key, help, status, config unset, dump_historic_ops_by_duration, dump_mempools, config get, config show, config diff, dump_ops_in_flight, get_command_descriptions                                                              |
+| osd ∩ mgr ∩ mds                 | 32 | config diff get, git_version, config set, version, log reopen, raise, log dump, config help, perf reset, counter schema, perf dump, dump_blocked_ops_count, messenger dump, perf schema, injectargs, perf histogram schema, dump_historic_ops, log flush, counter dump, dump_blocked_ops, perf histogram dump, rotate-key, help, status, config unset, dump_historic_ops_by_duration, dump_mempools, config get, config show, config diff, dump_ops_in_flight, get_command_descriptions                                                              |
+| mon ∩ mds                       | 30 | config diff get, git_version, config set, version, log reopen, raise, log dump, config help, ops, perf reset, counter schema, perf dump, messenger dump, perf schema, injectargs, perf histogram schema, dump_historic_ops, log flush, counter dump, perf histogram dump, help, config unset, dump_historic_ops_by_duration, dump_mempools, config get, config show, config diff, dump_ops_in_flight, heap, get_command_descriptions                                                                                                                 |
+| osd ∩ mon ∩ mds                 | 30 | config diff get, git_version, config set, version, log reopen, raise, log dump, config help, ops, perf reset, counter schema, perf dump, messenger dump, perf schema, injectargs, perf histogram schema, dump_historic_ops, log flush, counter dump, perf histogram dump, help, config unset, dump_historic_ops_by_duration, dump_mempools, config get, config show, config diff, dump_ops_in_flight, heap, get_command_descriptions                                                                                                                 |
+| mon ∩ mgr                       | 29 | dump_historic_slow_ops, config diff get, git_version, config set, version, log reopen, raise, log dump, config help, perf reset, counter schema, perf dump, messenger dump, perf schema, injectargs, perf histogram schema, dump_historic_ops, log flush, counter dump, perf histogram dump, help, config unset, dump_historic_ops_by_duration, dump_mempools, config get, config show, config diff, dump_ops_in_flight, get_command_descriptions                                                                                                    |
+| osd ∩ mon ∩ mgr                 | 29 | dump_historic_slow_ops, config diff get, git_version, config set, version, log reopen, raise, log dump, config help, perf reset, counter schema, perf dump, messenger dump, perf schema, injectargs, perf histogram schema, dump_historic_ops, log flush, counter dump, perf histogram dump, help, config unset, dump_historic_ops_by_duration, dump_mempools, config get, config show, config diff, dump_ops_in_flight, get_command_descriptions                                                                                                    |
+| mon ∩ mgr ∩ mds                 | 28 | config diff get, git_version, config set, version, log reopen, raise, log dump, config help, perf reset, counter schema, perf dump, messenger dump, perf schema, injectargs, perf histogram schema, dump_historic_ops, log flush, counter dump, perf histogram dump, help, config unset, dump_historic_ops_by_duration, dump_mempools, config get, config show, config diff, dump_ops_in_flight, get_command_descriptions                                                                                                                            |
+| osd ∩ mon ∩ mgr ∩ mds           | 28 | config diff get, git_version, config set, version, log reopen, raise, log dump, config help, perf reset, counter schema, perf dump, messenger dump, perf schema, injectargs, perf histogram schema, dump_historic_ops, log flush, counter dump, perf histogram dump, help, config unset, dump_historic_ops_by_duration, dump_mempools, config get, config show, config diff, dump_ops_in_flight, get_command_descriptions                                                                                                                            |
+| osd ∩ mds \ intersection of all |  9 | cache drop, cache status, dump_blocked_ops_count, cpu_profiler, ops, dump_blocked_ops, heap, rotate-key, status                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| osd ∩ mgr \ intersection of all |  7 | dump_historic_slow_ops, dump_blocked_ops, dump_blocked_ops_count, dump_osd_network, objecter_requests, rotate-key, status                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| osd ∩ mon \ intersection of all |  5 | dump_historic_slow_ops, smart, ops, heap, compact                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| mgr ∩ mds \ intersection of all |  4 | dump_blocked_ops, rotate-key, dump_blocked_ops_count, status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| mon ∩ mds \ intersection of all |  2 | ops, heap                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| mon ∩ mgr \ intersection of all |  1 | dump_historic_slow_ops                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+
+
+** Let's classify those common ones
+| config                        | diff, diff get, get, help, set, show, unset | current config                                     |
+| injectargs                    |                                             | inject configuration arguments into running daemon |
+|-------------------------------+---------------------------------------------+----------------------------------------------------|
+| counter                       | dump, schema                                | performance counter                                |
+| perf                          | dump, reset, schema                         |                                                    |
+| perf histogram                | dump schema                                 |                                                    |
+|-------------------------------+---------------------------------------------+----------------------------------------------------|
+| dump_historic_ops             |                                             | recent ops                                         |
+| dump_historic_ops_by_duration |                                             | recent ops by duration                             |
+| dump_ops_in_flight            |                                             | ops in flight                                      |
+|-------------------------------+---------------------------------------------+----------------------------------------------------|
+| dump_mempools                 |                                             | mempool stats                                      |
+|-------------------------------+---------------------------------------------+----------------------------------------------------|
+| get_command_descriptions      |                                             | list available commands                            |
+| help                          |                                             | list available commands                            |
+|-------------------------------+---------------------------------------------+----------------------------------------------------|
+| git_version                   |                                             | git version                                        |
+| version                       |                                             | ceph version                                       |
+|-------------------------------+---------------------------------------------+----------------------------------------------------|
+| log                           | dump, flush, reopen                         | log file                                           |
+|-------------------------------+---------------------------------------------+----------------------------------------------------|
+| messenger dump                |                                             | dump messenger status                              |
+|-------------------------------+---------------------------------------------+----------------------------------------------------|
+| raise                         |                                             | deliver signal                                     |
+| abort                         |                                             | abort daemon                                       |
+** Unique commands
+#+begin_src python :noweb yes :file "./difference.svg" :results graphics file value
+<<simpleasok>>
+
+from collections import defaultdict
+from collections import Counter
+from operator import itemgetter
+from functools import reduce
+from itertools import combinations
+import matplotlib.pyplot as plt
+
+plt.style.use('tableau-colorblind10')
+
+cluster = connect(pathlib.Path(ceph_config))
+by_target_type = defaultdict(set)
+for targets in get_inventory(cluster).values():
+    target = next(iter(targets))
+    h = command_json(cluster, target, prefix="help")
+    for k, v in h.items():
+        by_target_type[target.type].add(k)
+
+sets = [(type, len(cmds)) for type, cmds in by_target_type.items()]
+
+keys = list(by_target_type.keys())
+for intersections in range(2, len(keys)+1):
+    for comb in combinations(keys, intersections):
+        inter = reduce(set.difference, (by_target_type[c] for c in comb))
+        name = " / ".join(comb)
+        sets.append((name, len(inter)))
+sets = sorted(sets, key=itemgetter(1), reverse=True)
+
+fig, ax = plt.subplots()
+ax.bar(range(len(sets)), list(map(itemgetter(1), sets)))
+ax.set_xticks(range(len(sets)), list(map(itemgetter(0), sets)), rotation=45, ha="right")
+ax.set_ylabel("Items in exact combination")
+fig.patch.set_alpha(0)
+ax.patch.set_alpha(0)
+plt.tight_layout()
+return fig
+#+end_src
+
+#+RESULTS:
+[[file:./difference.svg]]
+
+#+begin_src python :noweb yes
+<<simpleasok>>
+
+from collections import defaultdict
+from collections import Counter
+from operator import itemgetter
+from functools import reduce
+from itertools import permutations
+import matplotlib.pyplot as plt
+
+plt.style.use('tableau-colorblind10')
+
+cluster = connect(pathlib.Path(ceph_config))
+by_target_type = defaultdict(set)
+for targets in get_inventory(cluster).values():
+    target = next(iter(targets))
+    h = command_json(cluster, target, prefix="help")
+    for k, v in h.items():
+        by_target_type[target.type].add(k)
+
+keys = set(by_target_type.keys())
+sets = []
+for type in keys:
+    other_keys = keys.copy()
+    other_keys.remove(type)
+    diff = by_target_type[type].difference(*[by_target_type[c] for c in other_keys])
+    name = f"{type} \\ ({"∪".join(other_keys)})"
+    sets.append((name, len(diff), ", ".join(diff)))
+sets = sorted(sets, key=itemgetter(1), reverse=True)
+return sets
+#+end_src
+
+#+RESULTS:
+| osd \ (mgr∪mds∪mon) | 75 | debug dump_missing, reset_pg_recovery_stats, reset_purged_snaps_last, bluestore allocator score bluefs-wal, bluestore allocator dump bluefs-wal, send_beacon, get_latest_osdmap, flush_pg_stats, bluestore allocator dump block, dump_op_pq_state, bluestore allocator score block, set_recovery_delay, bench, dump_objectstore_kv_stats, bluestore allocator fragmentation histogram block, bluefs stats, injectecclearreaderr, rmomapkey, injectfull, bluestore allocator fragmentation block, bluestore bluefs device info, set_heap_property, query, injectecreaderr, injectecclearwriteerr, bluestore compression stats, setomapval, scrubdebug, bluestore allocator score bluefs-db, getomap, clear_shards_repaired, injectdataerr, bluestore allocator fragmentation bluefs-db, dump_pgstate_history, bluestore allocator fragmentation histogram bluefs-db, dump_osd_pg_stats, injectmdataerr, list_unfound, schedule-deep-scrub, dump_recovery_reservations, mark_unfound_lost, schedule-scrub, cluster_log, flush_journal, get_heap_property, scrub_purged_snaps, trim stale osdmaps, bluefs debug_inject_read_zeros, bluestore allocator dump bluefs-db, rotate-stored-key, log, flush_store_cache, injectparityread, scrub, bluestore allocator fragmentation histogram bluefs-wal, calc_objectstore_db_histogram, bluefs files list, injectclearparityread, dump_pool_statfs, list_devices, get_mapped_pools, dump_scrubs, bluestore list, dump_pg_recovery_stats, dump_scrub_reservations, dump_watchers, truncobj, dump_blocklist, bluestore onode metadata, bluestore collections, debug kick_recovery_wq, deep-scrub, injectecwriteerr, bluestore allocator fragmentation bluefs-wal, setomapheader |
+| mds \ (osd∪mgr∪mon) | 43 | dump snaps, get subtrees, scrub_path, client evict, damage rm, force_readonly, dump stray, flush journal, dump tree, flush_path, dump cache, dump inode, scrub abort, dirfrag split, scrub start, dirfrag merge, session ls, quiesce db, op kill, scrub resume, respawn, quiesce path, dump loads, op get, scrub purge_status, session kill, lockup, session config, scrub status, session evict, client ls, dump_export_states, lock path, openfiles ls, export dir, exit, client config, damage ls, osdmap barrier, dump dir, tag path, scrub pause, dirfrag ls                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| mon \ (osd∪mgr∪mds) |  9 | quorum enter, mon_status, add_bootstrap_peer_hintv, connection scores dump, sessions, quorum exit, add_bootstrap_peer_hint, sync_force, connection scores reset                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| mgr \ (osd∪mds∪mon) |  1 | mgr_status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |

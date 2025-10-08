@@ -1,0 +1,59 @@
+---
+repos:
+  - repo: https://github.com/codespell-project/codespell
+    rev: 63c8f8312b7559622c0d82815639671ae42132ac  # frozen: v2.4.1
+    hooks:
+      - id: codespell
+        args: ["--ignore-words-list", "edn", "--ignore-regex=.*codespell-ignore$", "--skip", "*.json"]
+
+  - repo: https://github.com/streetsidesoftware/cspell-cli
+    rev: 3749de0c02b93bbbe0eae9d7d72da1ecf3c7a2e0  # frozen: v9.2.0
+    hooks:
+    - id: cspell
+      args:
+        - --no-must-find-files
+        - --no-progress
+        - --no-summary
+        - --gitignore
+        - --unique
+      exclude: >-
+        (?x)^(
+          \.dicts/.*|
+          \.gitignore|
+          .*\.(json|png|svg|py|css)
+          )$
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: debug-statements
+      - id: name-tests-test
+      - id: requirements-txt-fixer
+      - id: detect-private-key
+      - id: destroyed-symlinks
+      - id: check-shebang-scripts-are-executable
+      - id: check-case-conflict
+      - id: check-ast
+      - id: check-builtin-literals
+      - id: check-merge-conflict
+      - id: check-json
+      - id: check-toml
+      - id: check-vcs-permalinks
+      - id: mixed-line-ending
+
+  - repo: https://github.com/jumanjihouse/pre-commit-hooks
+    rev: 38980559e3a605691d6579f96222c30778e5a69e  # frozen: 3.0.0
+    hooks:
+      - id: git-check
+        exclude: >-
+          (?x)^(
+          .*\.log
+          )$
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: 63c8f8312b7559622c0d82815639671ae42132ac  # frozen: v2.4.1
+    hooks:
+      - id: codespell
