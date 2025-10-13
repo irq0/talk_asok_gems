@@ -1,6 +1,7 @@
 #+TITLE: Asok Gems and How to Polish Them
 #+AUTHOR: Marcel Lauhoff
 #+OPTIONS: H:4 toc:2 num:nil
+#+PROPERTY: header-args :noweb no-export
 #+PROPERTY: header-args :var source="/compile2/ceph/wip"
 #+PROPERTY: header-args+ :var build="/compile2/ceph/wip/build"
 #+PROPERTY: header-args+ :var out="/compile2/ceph/wip/build/out"
@@ -367,7 +368,7 @@ def connect(conffile: pathlib.Path) -> rados.Rados:
 /Operator please/
 
 ** How many unique commands are there?
-#+begin_src python :noweb yes :tangle map.py :results value table
+#+begin_src python :noweb no-export :tangle map.py :results value table
 <<simpleasok>>
 from collections import defaultdict
 
@@ -385,7 +386,7 @@ return len(unique_commands)
 | 170 |
 
 ** How many command per service type?
-#+begin_src python :noweb yes :tangle map.py :results value table
+#+begin_src python :noweb no-export :tangle map.py :results value table
 <<simpleasok>>
 from collections import defaultdict
 
@@ -406,7 +407,7 @@ return target_commands
 | mds |  80 |
 
 ** Which command is available where?
-#+begin_src python :noweb yes :tangle map.py :results value table
+#+begin_src python :noweb no-export :tangle map.py :results value table
 <<simpleasok>>
 from collections import defaultdict
 
@@ -594,7 +595,7 @@ return [(k, v[0], v[1]) for k, v in help.items()]
 | tag path                                               | (mds)             | Apply scrub tag recursively                                                                                                                                                                                                                                                                                                                                          |     |
 
 ** What commands are available on all services?
-#+begin_src python :noweb yes :tangle map.py
+#+begin_src python :noweb no-export :tangle map.py
 <<simpleasok>>
 from collections import defaultdict
 
@@ -639,7 +640,7 @@ return [(k, v[0], v[1]) for k, v in help.items() if len(v[0]) == 4]
 | raise                         | (osd mon mds mgr) | deliver the <signal> to the daemon process, optionally delaying <after> seconds; when --after is used, the program will fork before sleeping, which allows to schedule signal delivery to a stopped daemon; it's possible to --cancel a pending signal delivery. <signal> can be in the forms '9', '-9', 'kill', '-KILL'. Use `raise -l` to list known signal names. |
 | version                       | (osd mon mds mgr) | get ceph version                                                                                                                                                                                                                                                                                                                                                     |
 ** Visualization: Intersection Diagram
-#+begin_src python :noweb yes :file "./intersection.svg" :results graphics file value
+#+begin_src python :noweb no-export :file "./intersection.svg" :results graphics file value
 <<simpleasok>>
 
 from collections import defaultdict
@@ -683,7 +684,7 @@ return fig
 [[file:./intersection.svg]]
 
 ** Intersections
-#+begin_src python :noweb yes
+#+begin_src python :noweb no-export
 <<simpleasok>>
 
 from collections import defaultdict
@@ -773,7 +774,7 @@ return sets
 |-------------------------------+---------------------------------------------+----------------------------------------------------|
 
 ** Unique commands
-#+begin_src python :noweb yes :file "./difference.svg" :results graphics file value
+#+begin_src python :noweb no-export :file "./difference.svg" :results graphics file value
 <<simpleasok>>
 
 from collections import defaultdict
@@ -816,7 +817,7 @@ return fig
 #+RESULTS:
 [[file:./difference.svg]]
 
-#+begin_src python :noweb yes
+#+begin_src python :noweb no-export
 <<simpleasok>>
 
 from collections import defaultdict
@@ -849,7 +850,7 @@ return sets
 #+end_src
 
 #+RESULTS:
-| osd \ (mds∪mon∪mgr) | 75 | =flush_store_cache=, =bluestore allocator fragmentation histogram bluefs-wal=, =dump_scrubs=, =bluestore allocator dump bluefs-wal=, =dump_objectstore_kv_stats=, =trim stale osdmaps=, =get_heap_property=, =scrub_purged_snaps=, =getomap=, =injectecclearwriteerr=, =debug dump_missing=, =bluefs stats=, =list_devices=, =dump_osd_pg_stats=, =dump_recovery_reservations=, =rmomapkey=, =setomapval=, =dump_op_pq_state=, =set_recovery_delay=, =dump_pool_statfs=, =scrubdebug=, =flush_pg_stats=, =dump_watchers=, =bluestore allocator fragmentation block=, =query=, =reset_pg_recovery_stats=, =get_latest_osdmap=, =bluestore allocator score block=, =dump_pgstate_history=, =setomapheader=, =set_heap_property=, =get_mapped_pools=, =injectecwriteerr=, =bluestore allocator score bluefs-wal=, =flush_journal=, =bench=, =bluestore bluefs device info=, =bluestore allocator dump block=, =bluestore allocator dump bluefs-db=, =bluestore allocator fragmentation bluefs-wal=, =injectecreaderr=, =schedule-scrub=, =clear_shards_repaired=, =bluestore allocator fragmentation histogram block=, =log=, =scrub=, =injectclearparityread=, =bluestore allocator score bluefs-db=, =injectdataerr=, =reset_purged_snaps_last=, =mark_unfound_lost=, =schedule-deep-scrub=, =bluestore collections=, =dump_blocklist=, =send_beacon=, =bluestore list=, =bluestore allocator fragmentation bluefs-db=, =dump_pg_recovery_stats=, =bluefs files list=, =injectfull=, =calc_objectstore_db_histogram=, =list_unfound=, =bluestore compression stats=, =rotate-stored-key=, =bluestore allocator fragmentation histogram bluefs-db=, =injectmdataerr=, =cluster_log=, =deep-scrub=, =bluefs debug_inject_read_zeros=, =truncobj=, =debug kick_recovery_wq=, =injectecclearreaderr=, =dump_scrub_reservations=, =injectparityread=, =bluestore onode metadata= |
-| mds \ (osd∪mon∪mgr) | 43 | =get subtrees=, =flush_path=, =dirfrag merge=, =dump inode=, =flush journal=, =op kill=, =session ls=, =session evict=, =quiesce path=, =session config=, =respawn=, =lockup=, =scrub abort=, =dirfrag split=, =scrub purge_status=, =export dir=, =osdmap barrier=, =quiesce db=, =lock path=, =dump snaps=, =dump loads=, =session kill=, =force_readonly=, =damage rm=, =damage ls=, =scrub status=, =op get=, =dump dir=, =client evict=, =scrub resume=, =tag path=, =exit=, =dump stray=, =dirfrag ls=, =dump cache=, =scrub_path=, =client config=, =dump tree=, =client ls=, =openfiles ls=, =scrub pause=, =dump_export_states=, =scrub start=                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| mon \ (mds∪osd∪mgr) |  9 | =connection scores dump=, =mon_status=, =sessions=, =add_bootstrap_peer_hint=, =quorum exit=, =add_bootstrap_peer_hintv=, =quorum enter=, =connection scores reset=, =sync_force=                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| mgr \ (mds∪osd∪mon) |  1 | =mgr_status=                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| osd \ (mds∪mgr∪mon) | 75 | =log=, =truncobj=, =debug dump_missing=, =scrub_purged_snaps=, =flush_store_cache=, =injectparityread=, =injectecclearwriteerr=, =injectmdataerr=, =bluestore allocator dump bluefs-wal=, =schedule-scrub=, =injectecreaderr=, =scrubdebug=, =bluestore allocator dump bluefs-db=, =cluster_log=, =flush_pg_stats=, =bluestore allocator fragmentation histogram bluefs-wal=, =bluestore collections=, =dump_scrub_reservations=, =debug kick_recovery_wq=, =trim stale osdmaps=, =list_devices=, =bluestore allocator fragmentation block=, =get_latest_osdmap=, =bluestore allocator score bluefs-wal=, =bluestore allocator fragmentation bluefs-db=, =dump_op_pq_state=, =bluestore allocator fragmentation histogram block=, =bluestore compression stats=, =rmomapkey=, =dump_pg_recovery_stats=, =get_heap_property=, =injectecwriteerr=, =calc_objectstore_db_histogram=, =flush_journal=, =dump_osd_pg_stats=, =getomap=, =rotate-stored-key=, =dump_recovery_reservations=, =bluefs stats=, =reset_pg_recovery_stats=, =dump_pool_statfs=, =mark_unfound_lost=, =get_mapped_pools=, =dump_scrubs=, =bluestore allocator fragmentation bluefs-wal=, =schedule-deep-scrub=, =deep-scrub=, =injectclearparityread=, =bluestore allocator dump block=, =setomapheader=, =set_heap_property=, =send_beacon=, =bluestore allocator score bluefs-db=, =dump_blocklist=, =set_recovery_delay=, =bluefs files list=, =dump_pgstate_history=, =dump_objectstore_kv_stats=, =setomapval=, =injectfull=, =query=, =bluestore allocator fragmentation histogram bluefs-db=, =bluestore allocator score block=, =list_unfound=, =bluestore list=, =clear_shards_repaired=, =bluestore bluefs device info=, =injectdataerr=, =bluestore onode metadata=, =bench=, =dump_watchers=, =reset_purged_snaps_last=, =scrub=, =injectecclearreaderr=, =bluefs debug_inject_read_zeros= |
+| mds \ (osd∪mgr∪mon) | 43 | =respawn=, =get subtrees=, =dirfrag merge=, =dump snaps=, =force_readonly=, =dump_export_states=, =dirfrag ls=, =op get=, =exit=, =session ls=, =scrub pause=, =osdmap barrier=, =flush_path=, =dump inode=, =lock path=, =scrub resume=, =session evict=, =client evict=, =dump cache=, =op kill=, =lockup=, =dirfrag split=, =dump loads=, =dump stray=, =scrub purge_status=, =scrub status=, =scrub_path=, =damage ls=, =session config=, =openfiles ls=, =quiesce db=, =damage rm=, =dump dir=, =tag path=, =client config=, =scrub abort=, =client ls=, =flush journal=, =scrub start=, =session kill=, =export dir=, =quiesce path=, =dump tree=                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| mon \ (osd∪mds∪mgr) |  9 | =add_bootstrap_peer_hint=, =connection scores dump=, =mon_status=, =sessions=, =sync_force=, =quorum enter=, =quorum exit=, =add_bootstrap_peer_hintv=, =connection scores reset=                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| mgr \ (osd∪mds∪mon) |  1 | =mgr_status=                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
