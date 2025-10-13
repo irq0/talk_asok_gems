@@ -1,0 +1,7 @@
+This is the companion org-mode notebook for the talk
+
+- Asok Gems and How to Polish Them at [[https://cephalocon2025.sched.com/event/27f3n/asok-gems-and-how-to-polish-them-marcel-lauhoff-clyso?iframe=yes&w=100%&sidebar=yes&bg=no][Cephalocon 2025]]
+
+* Notebook
+- as [[./notebook.org][org-mode]] file
+- exported to [[https://irq0.github.io/talk_asok_gems/notebook.html][html]] with figures
