@@ -6,23 +6,6 @@ repos:
       - id: codespell
         args: ["--ignore-words-list", "edn", "--ignore-regex=.*codespell-ignore$", "--skip", "*.json"]
 
-  - repo: https://github.com/streetsidesoftware/cspell-cli
-    rev: 3749de0c02b93bbbe0eae9d7d72da1ecf3c7a2e0  # frozen: v9.2.0
-    hooks:
-    - id: cspell
-      args:
-        - --no-must-find-files
-        - --no-progress
-        - --no-summary
-        - --gitignore
-        - --unique
-      exclude: >-
-        (?x)^(
-          \.dicts/.*|
-          \.gitignore|
-          .*\.(json|png|svg|py|css)
-          )$
-
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
     hooks:
