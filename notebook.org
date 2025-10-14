@@ -1375,9 +1375,9 @@ hb_front_server
 ms_objecter
 #+end_example
 
-* COMMENT RTT Matrix
+* RTT Matrix
 
-#+begin_src python :noweb no-export :file "./rttmatrix.svg" :results graphics file value :tangle rttmatrix.py
+#+begin_src python :noweb no-export :file "./rttmatrix.svg" :results graphics file value :tangle rttmatrix.py :tangle rttmatrix.py
 <<simpleasok>>
 
 <<messenger_dump>>
