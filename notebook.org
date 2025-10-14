@@ -225,7 +225,7 @@ class CephAsokTarget(CephTargetBase):
 
     @override
     def __str__(self) -> str:
-        return f"ASOK:{self.path}"
+        return self.path.name
 
 class CephMdsTarget(CephTargetBase):
     type: Literal["mds"]
@@ -369,6 +369,282 @@ def connect(conffile: pathlib.Path) -> rados.Rados:
 
 #+RESULTS: simpleasok
 : None
+
+#+name: messenger_dump
+#+begin_src python :noweb no-export
+from datetime import timedelta
+
+class EntityNameT(BaseModel):
+    type: str
+    num: int
+
+
+class EntityName(BaseModel):
+    type: int
+    id: str
+
+
+class EntityAddr(BaseModel):
+    type: str
+    addr: str
+    nonce: int
+
+    def human(self) -> str:
+        if self.type == "none":
+            return "∅"
+        elif self.type == "any":
+            return f"#{str(self.nonce)}"
+        else:
+            return f"{self.type}/{self.addr}#{str(self.nonce)}"
+
+
+class AddrVec(BaseModel):
+    addrvec: list[EntityAddr]
+
+
+class Socket(BaseModel):
+    socket_fd: int | None
+    worker_id: int | None
+
+
+class DispatchQueue(BaseModel):
+    length: int
+    max_age_ago: str  # TODO support utimespan_str
+
+
+class ConnectionStatus(BaseModel):
+    connected: bool
+    loopback: bool
+
+    def connected_human(self) -> str:
+        return "✔" if self.connected else "𐄂"
+
+
+def format_timedelta_compact(d: timedelta) -> str:
+    total_sec = d.total_seconds()
+    if total_sec >= 1:
+        return f"{total_sec:.3f} s"
+    elif total_sec >= 1e-3:
+        return f"{total_sec * 1e3:.3f} ms"
+    elif total_sec == 0:
+        return "0"
+    else:
+        return f"{total_sec * 1e6:.0f} µs"
+
+
+class TCPInfo(BaseModel):
+    tcpi_state: str
+    tcpi_retransmits: int
+    tcpi_probes: int
+    tcpi_backoff: int
+    tcpi_rto: timedelta = Field(alias="tcpi_rto_us")
+    tcpi_ato: timedelta = Field(alias="tcpi_ato_us")
+    tcpi_snd_mss: int
+    tcpi_rcv_mss: int
+    tcpi_unacked: int
+    tcpi_lost: int
+    tcpi_retrans: int
+    tcpi_pmtu: int
+    tcpi_rtt: timedelta = Field(alias="tcpi_rtt_us")
+    tcpi_rttvar: timedelta = Field(alias="tcpi_rttvar_us")
+    tcpi_total_retrans: int
+    tcpi_last_data_sent: timedelta = Field(alias="tcpi_last_data_sent_ms")
+    tcpi_last_ack_sent: timedelta = Field(alias="tcpi_last_ack_sent_ms")
+    tcpi_last_data_recv: timedelta = Field(alias="tcpi_last_data_recv_ms")
+    tcpi_last_ack_recv: timedelta = Field(alias="tcpi_last_ack_recv_ms")
+    tcpi_options: list[str]
+
+    @field_validator("tcpi_rto", "tcpi_ato", "tcpi_rtt", "tcpi_rttvar", mode="before")
+    @classmethod
+    def us_timedelta(cls, value: int) -> timedelta:
+        return timedelta(milliseconds=value / 1000)
+
+    @field_validator(
+        "tcpi_last_data_sent",
+        "tcpi_last_ack_sent",
+        "tcpi_last_data_recv",
+        "tcpi_last_ack_recv",
+        mode="before",
+    )
+    @classmethod
+    def ms_timedelta(cls, value: int) -> timedelta:
+        return timedelta(milliseconds=value)
+
+    def human(self, k: str) -> str:
+        v = getattr(self, k)
+        if v:
+            if isinstance(v, timedelta):
+                return format_timedelta_compact(v)
+            else:
+                return str(v)
+        else:
+            return ""
+
+
+class Peer(BaseModel):
+    entity_name: EntityName
+    type: str
+    id: int
+    global_id: int
+    addr: AddrVec
+
+    def human(self):
+        return f"{self.global_id}/{self.id}" if self.id != -1 else "∅"
+
+
+class ProtocolV2Crypto(BaseModel):
+    rx: str
+    tx: str
+
+
+class ProtocolV2Compression(BaseModel):
+    rx: str
+    tx: str
+
+
+class ProtocolV1(BaseModel):
+    state: str
+    connect_seq: int
+    peer_global_seq: int
+    con_mode: Optional[str]
+
+
+class ProtocolV2(BaseModel):
+    state: str
+    connect_seq: int
+    peer_global_seq: int
+    con_mode: Optional[str]
+    rev1: bool
+    crypto: ProtocolV2Crypto
+    compression: ProtocolV2Compression
+
+
+class Protocol(BaseModel):
+    v1: Optional[ProtocolV1] = None
+    v2: Optional[ProtocolV2] = None
+
+    def crypto(self) -> str:
+        if self.v2:
+            crypto = self.v2.crypto
+            if crypto.rx == crypto.tx:
+                return crypto.rx
+            else:
+                return f"{crypto.rx}/{crypto.tx}"
+        else:
+            return "-"
+
+    def compression(self) -> str:
+        if self.v2:
+            comp = self.v2.compression
+            if comp.rx == comp.tx:
+                return comp.rx
+            else:
+                return f"{comp.rx}/{comp.tx}"
+        else:
+            return "-"
+
+    def mode(self) -> str:
+        if self.v2:
+            return self.v2.con_mode or ""
+        if self.v1:
+            return self.v1.con_mode or ""
+        return ""
+
+
+class AsyncConnection(BaseModel):
+    state: str
+    messenger_nonce: int
+    status: ConnectionStatus
+    socket_fd: int | None
+    tcp_info: TCPInfo | None
+    conn_id: int
+    peer: Peer
+    last_connect_started_ago: str  # TODO support timepan_str
+    last_active_ago: str
+    recv_start_time_ago: str
+    last_tick_id: int
+    socket_addr: EntityAddr
+    target_addr: EntityAddr
+    port: int
+    protocol: Protocol
+    worker_id: int
+
+
+class Connection(BaseModel):
+    addrvec: list[EntityAddr]
+    async_connection: AsyncConnection
+
+
+class Messenger(BaseModel):
+    nonce: int
+    my_name: EntityNameT
+    my_addrs: AddrVec
+    listen_sockets: list[Socket] = []
+    dispatch_queue: DispatchQueue
+    connections_count: int
+    connections: list[Connection]
+    anon_conns: list[AsyncConnection]
+    accepting_conns: list[AsyncConnection]
+    deleted_conns: list[AsyncConnection]
+    local_connection: list[AsyncConnection]
+
+    def direction(self, connection: AsyncConnection):
+        if connection.socket_addr in self.my_addrs.addrvec:
+            return "IN"
+        else:
+            return "OUT"
+
+
+class MessengerDump(BaseModel):
+    name: str
+    messenger: Messenger
+
+def discover_messengers(cluster: rados.Rados, target: CephTarget) -> list[str]:
+    try:
+        return command_json(cluster, target, prefix="messenger dump")["messengers"]
+    except CephCommandError:
+        LOG.error(
+            'Failed to discover messengers on %s. "messenger dump" supported?',
+            target,
+        )
+        return []
+
+
+def dump_messenger(
+    cluster: rados.Rados, target: CephTarget, msgr: str
+) -> Messenger | None:
+    try:
+        return MessengerDump.model_validate_json(
+            target_command(
+                target,
+                cluster,
+                json.dumps(
+                    {
+                        "prefix": "messenger dump",
+                        "msgr": msgr,
+                        "tcp_info": True,
+                        "dumpcontents:all": True,
+                    }
+                ),
+            )[0]
+        ).messenger
+    except CephCommandError as ex:
+        LOG.error('Messenger "%s" dump on %s failed: %s', msgr, target, ex)
+        return None
+
+def dump_messengers(
+    cluster: rados.Rados, target: CephTarget, msgrs: list[str]
+) -> dict[str, Messenger]:
+    result: dict[str, Messenger] = {}
+    for msgr in msgrs:
+        dump = dump_messenger(cluster, target, msgr)
+        if dump:
+            result[msgr] = dump
+    return result
+
+#+end_src
+
+#+RESULTS: messenger_dump
 
 
 * Treasure Maps, Fallen Trees
@@ -889,3 +1165,301 @@ return sets
 | rgw \ (mgr∪osd∪mon∪mds) |  9 | =sync trace show=, =sync trace active=, =cache erase=, =cache list=, =cr dump=, =cache zap=, =sync trace active_short=, =sync trace history=, =cache inspect=                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | mon \ (mgr∪osd∪rgw∪mds) |  9 | =connection scores dump=, =sync_force=, =sessions=, =add_bootstrap_peer_hintv=, =mon_status=, =quorum exit=, =add_bootstrap_peer_hint=, =quorum enter=, =connection scores reset=                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | mgr \ (osd∪mon∪rgw∪mds) |  1 | =mgr_status=                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+** Hidden Asok Commands
+- abort
+- assert
+- leak_some_memory
+
+* One-Liners
+** Configuration Overview
+#+begin_src bash :noweb no-export :results output verbatim
+<<env>>
+
+ceph daemon $out/radosgw.8000.asok config diff | jq -r '
+.diff | to_entries | map(.key as $k | .value as $conf | "\($k) | final:\($conf.final) | " + ([["def", $conf.default], ["mon", $conf.mon], ["file", $conf.file], ["env", $conf.env], ["cmd", $conf.cmdline], ["run", $conf.override]] | map(select(.[1] != null)) |  map(join(":")) | join(" → ")    )) | .[]'
+
+#+end_src
+
+#+RESULTS:
+#+begin_example
+admin_socket | final:/compile2/ceph/wip/build/out/radosgw.8000.asok | def:$run_dir/$cluster-$name.$pid.$cctid.asok → file:/compile2/ceph/wip/build/out/radosgw.8000.asok → cmd:/compile2/ceph/wip/build/out/radosgw.8000.asok
+auth_client_required | final:cephx | def:cephx → file:cephx
+auth_cluster_required | final:cephx | def:cephx → file:cephx
+auth_service_required | final:cephx | def:cephx → file:cephx
+crash_dir | final:/compile2/ceph/wip/build/out | def:/var/lib/ceph/crash → file:/compile2/ceph/wip/build/out
+debug_asok_assert_abort | final:true | def:false → file:true
+debug_rgw | final:1/5 | def:1/5
+debug_rgw_flight | final:20/20 | def:1/5 → file:20/20
+debug_rgw_notification | final:20/20 | def:1/5 → file:20/20
+enable_experimental_unrecoverable_data_corrupting_features | final:* | def: → file:*
+erasure_code_dir | final:/compile2/ceph/wip/build/lib | def:/usr/local/lib64/ceph/erasure-code → file:/compile2/ceph/wip/build/lib
+fsid | final:d2135fc7-bf9d-4325-97b9-9c054bc1d0e7 | def:00000000-0000-0000-0000-000000000000 → file:d2135fc7-bf9d-4325-97b9-9c054bc1d0e7 → run:d2135fc7-bf9d-4325-97b9-9c054bc1d0e7
+host | final:janelane | def: → run:janelane
+keyring | final:/compile2/ceph/wip/build/keyring | def:$rgw_data/keyring → file:/compile2/ceph/wip/build/keyring
+lockdep | final:true | def:false → file:true
+log_file | final:/compile2/ceph/wip/build/out/radosgw.8000.log | def:/var/log/ceph/$cluster-$name.log → file:/compile2/ceph/wip/build/out/$name.$pid.log → cmd:/compile2/ceph/wip/build/out/radosgw.8000.log
+mon_host | final:[v2:192.168.101.23:40531,v1:192.168.101.23:40532] [v2:192.168.101.23:40533,v1:192.168.101.23:40534] [v2:192.168.101.23:40535,v1:192.168.101.23:40536] | def: → file:[v2:192.168.101.23:40531,v1:192.168.101.23:40532] [v2:192.168.101.23:40533,v1:192.168.101.23:40534] [v2:192.168.101.23:40535,v1:192.168.101.23:40536]
+mon_max_pg_per_osd | final:1000 | def:250 → file:1000
+mon_osd_backfillfull_ratio | final:0.98999999999999999 | def:0.90000000000000002 → file:0.98999999999999999
+mon_osd_full_ratio | final:0.98999999999999999 | def:0.94999999999999996 → file:0.98999999999999999
+mon_osd_nearfull_ratio | final:0.98999999999999999 | def:0.84999999999999998 → file:0.98999999999999999
+ms_bind_msgr1 | final:true | def:true → file:true
+ms_bind_msgr2 | final:true | def:true → file:true
+ms_mon_client_mode | final:secure | def:secure
+no_config_file | final:false | def:false → run:false
+objecter_inflight_ops | final:24576 | def:24576
+osd_crush_chooseleaf_type | final:0 | def:1 → file:0
+osd_failsafe_full_ratio | final:0.98999999999999999 | def:0.96999999999999997 → file:0.98999999999999999
+osd_pool_default_min_size | final:1 | def:0 → mon:1
+osd_pool_default_size | final:3 | def:3 → mon:3
+pid_file | final:/compile2/ceph/wip/build/out/radosgw.8000.pid | def: → cmd:/compile2/ceph/wip/build/out/radosgw.8000.pid
+plugin_dir | final:/compile2/ceph/wip/build/lib | def:/usr/local/lib64/ceph → file:/compile2/ceph/wip/build/lib
+rbd_default_features | final:61 | def:61
+rbd_qos_exclude_ops | final:0 | def:0
+rgw_crypt_require_ssl | final:true | def:true → file:false → run:true
+rgw_crypt_s3_kms_backend | final:testing | def:barbican → file:testing
+rgw_crypt_s3_kms_encryption_keys | final:testkey-1=YmluCmJvb3N0CmJvb3N0LWJ1aWxkCmNlcGguY29uZgo= testkey-2=aWIKTWFrZWZpbGUKbWFuCm91dApzcmMKVGVzdGluZwo= | def: → file:testkey-1=YmluCmJvb3N0CmJvb3N0LWJ1aWxkCmNlcGguY29uZgo= testkey-2=aWIKTWFrZWZpbGUKbWFuCm91dApzcmMKVGVzdGluZwo=
+rgw_frontends | final:beast port=8000 | def:beast port=7480 → file:beast port=8000 → cmd:beast port=8000
+rgw_luarocks_location | final:/compile2/ceph/wip/build/out/radosgw.8000.luarocks | def:/tmp/rgw_luarocks/$name → cmd:/compile2/ceph/wip/build/out/radosgw.8000.luarocks
+rgw_s3_auth_use_sts | final:true | def:false → file:true
+rgw_sts_key | final:abcdefghijklmnop | def: → file:abcdefghijklmnop
+run_dir | final:/compile2/ceph/wip/build/out | def:/var/run/ceph → file:/compile2/ceph/wip/build/out
+#+end_example
+
+** Configuration Diff
+#+caption: Show diff between defaults and final configuration
+#+begin_src bash :noweb no-export :results output verbatim
+<<env>>
+  diff -Nur <(ceph daemon $out/radosgw.8000.asok config diff | jq -r '.diff | to_entries | map(.key as $k | .value as $conf | "\($k) → \($conf.default)") | .[]' | sort) <(ceph daemon $out/radosgw.8000.asok config diff | jq -r '.diff | to_entries | map(.key as $k | .value as $conf | "\($k) → \($conf.final)") | .[]' | sort)
+#+end_src
+
+#+RESULTS:
+#+begin_example
+--- /dev/fd/63	2025-10-14 09:54:25.739318798 +0200
++++ /dev/fd/62	2025-10-14 09:54:25.739318798 +0200
+@@ -1,42 +1,42 @@
+-admin_socket → $run_dir/$cluster-$name.$pid.$cctid.asok
++admin_socket → /compile2/ceph/wip/build/out/radosgw.8000.asok
+ auth_client_required → cephx
+ auth_cluster_required → cephx
+ auth_service_required → cephx
+-crash_dir → /var/lib/ceph/crash
+-debug_asok_assert_abort → false
++crash_dir → /compile2/ceph/wip/build/out
++debug_asok_assert_abort → true
+ debug_rgw → 1/5
+-debug_rgw_flight → 1/5
+-debug_rgw_notification → 1/5
+-enable_experimental_unrecoverable_data_corrupting_features →
+-erasure_code_dir → /usr/local/lib64/ceph/erasure-code
+-fsid → 00000000-0000-0000-0000-000000000000
+-host →
+-keyring → $rgw_data/keyring
+-lockdep → false
+-log_file → /var/log/ceph/$cluster-$name.log
+-mon_host →
+-mon_max_pg_per_osd → 250
+-mon_osd_backfillfull_ratio → 0.90000000000000002
+-mon_osd_full_ratio → 0.94999999999999996
+-mon_osd_nearfull_ratio → 0.84999999999999998
++debug_rgw_flight → 20/20
++debug_rgw_notification → 20/20
++enable_experimental_unrecoverable_data_corrupting_features → *
++erasure_code_dir → /compile2/ceph/wip/build/lib
++fsid → d2135fc7-bf9d-4325-97b9-9c054bc1d0e7
++host → janelane
++keyring → /compile2/ceph/wip/build/keyring
++lockdep → true
++log_file → /compile2/ceph/wip/build/out/radosgw.8000.log
++mon_host → [v2:192.168.101.23:40531,v1:192.168.101.23:40532] [v2:192.168.101.23:40533,v1:192.168.101.23:40534] [v2:192.168.101.23:40535,v1:192.168.101.23:40536]
++mon_max_pg_per_osd → 1000
++mon_osd_backfillfull_ratio → 0.98999999999999999
++mon_osd_full_ratio → 0.98999999999999999
++mon_osd_nearfull_ratio → 0.98999999999999999
+ ms_bind_msgr1 → true
+ ms_bind_msgr2 → true
+ ms_mon_client_mode → secure
+ no_config_file → false
+ objecter_inflight_ops → 24576
+-osd_crush_chooseleaf_type → 1
+-osd_failsafe_full_ratio → 0.96999999999999997
+-osd_pool_default_min_size → 0
++osd_crush_chooseleaf_type → 0
++osd_failsafe_full_ratio → 0.98999999999999999
++osd_pool_default_min_size → 1
+ osd_pool_default_size → 3
+-pid_file →
+-plugin_dir → /usr/local/lib64/ceph
++pid_file → /compile2/ceph/wip/build/out/radosgw.8000.pid
++plugin_dir → /compile2/ceph/wip/build/lib
+ rbd_default_features → 61
+ rbd_qos_exclude_ops → 0
+ rgw_crypt_require_ssl → true
+-rgw_crypt_s3_kms_backend → barbican
+-rgw_crypt_s3_kms_encryption_keys →
+-rgw_frontends → beast port=7480
+-rgw_luarocks_location → /tmp/rgw_luarocks/$name
+-rgw_s3_auth_use_sts → false
+-rgw_sts_key →
+-run_dir → /var/run/ceph
++rgw_crypt_s3_kms_backend → testing
++rgw_crypt_s3_kms_encryption_keys → testkey-1=YmluCmJvb3N0CmJvb3N0LWJ1aWxkCmNlcGguY29uZgo= testkey-2=aWIKTWFrZWZpbGUKbWFuCm91dApzcmMKVGVzdGluZwo=
++rgw_frontends → beast port=8000
++rgw_luarocks_location → /compile2/ceph/wip/build/out/radosgw.8000.luarocks
++rgw_s3_auth_use_sts → true
++rgw_sts_key → abcdefghijklmnop
++run_dir → /compile2/ceph/wip/build/out
+#+end_example
+
+
+** Connections
+#+caption: Get all open connections to Ceph services
+#+begin_src  bash :noweb no-export :results output verbatim
+<<env>>
+for msg in $(ceph daemon $out/radosgw.8000.asok messenger dump | jq -r '.messengers[]')
+do
+        echo "$msg"
+        ceph daemon $out/radosgw.8000.asok messenger dump $msg | jq -r '.messenger.connections | map(.async_connection | select(.status.connected) | " ⮡ \(.peer.type) \(.target_addr.type):\(.target_addr.addr) \(.target_addr.nonce)") | .[]'
+done
+#+end_src
+
+#+RESULTS:
+#+begin_example
+radosclient-10888001826886228263
+ ⮡ mgr v2:192.168.101.23:6800 2098926626
+ ⮡ mon v2:192.168.101.23:40535 0
+radosclient-9148977104229755266
+ ⮡ mgr v2:192.168.101.23:6800 2098926626
+ ⮡ osd v2:192.168.101.23:6818 2358880671
+ ⮡ osd v2:192.168.101.23:6810 2237892721
+ ⮡ osd v2:192.168.101.23:6802 2820557489
+ ⮡ mon v2:192.168.101.23:40535 0
+radosclient-9260873787875441259
+ ⮡ mgr v2:192.168.101.23:6800 2098926626
+ ⮡ osd v2:192.168.101.23:6818 2358880671
+ ⮡ osd v2:192.168.101.23:6810 2237892721
+ ⮡ osd v2:192.168.101.23:6802 2820557489
+ ⮡ mon v2:192.168.101.23:40533 0
+#+end_example
+
+#+begin_src bash  bash :noweb no-export :results output verbatim
+<<env>>
+
+for msg in $(ceph tell osd.0 messenger dump | jq -r '.messengers[]')
+do
+        echo "$msg"
+        ceph tell osd.0 messenger dump $msg 2> /dev/null | jq -r '.messenger.connections | map(.async_connection | select(.status.connected) | " ⮡ \(.peer.type).\(.peer.global_id) \(.target_addr.type):\(.target_addr.addr)") | .[]'
+done
+#+end_src
+
+#+RESULTS:
+#+begin_example
+client
+ ⮡ mgr.4119 any:192.168.101.23:0
+ ⮡ mgr.0 v2:192.168.101.23:6800
+ ⮡ client.4487 any:192.168.101.23:0
+ ⮡ client.9281 any:192.168.101.23:0
+ ⮡ client.4479 any:192.168.101.23:0
+ ⮡ mon.0 v2:192.168.101.23:40531
+cluster
+ ⮡ osd.0 v2:192.168.101.23:6812
+ ⮡ osd.4200 v2:192.168.101.23:6820
+hb_back_client
+ ⮡ osd.0 v2:192.168.101.23:6824
+ ⮡ osd.0 v2:192.168.101.23:6816
+hb_back_server
+hb_front_client
+ ⮡ osd.0 v2:192.168.101.23:6822
+ ⮡ osd.0 v2:192.168.101.23:6814
+hb_front_server
+ms_objecter
+#+end_example
+
+* COMMENT RTT Matrix
+
+#+begin_src python :noweb no-export :file "./rttmatrix.svg" :results graphics file value :tangle rttmatrix.py
+<<simpleasok>>
+
+<<messenger_dump>>
+
+from operator import itemgetter
+from functools import reduce
+from collections import defaultdict
+from itertools import permutations, chain
+import matplotlib.pyplot as plt
+import numpy as np
+import textwrap
+
+plt.style.use('tableau-colorblind10')
+
+cluster = connect(pathlib.Path(ceph_config))
+all_targets = list(chain(*get_inventory(cluster).values()))
+n_targets = len(all_targets)
+#all_targets = get_inventory(cluster)["osd"]
+
+def format_timedelta_compact(d: timedelta) -> str:
+    total_sec = d.total_seconds()
+    if total_sec >= 1:
+        return f"{total_sec:.0f}"
+    elif total_sec >= 1e-3:
+        return f"{total_sec * 1e3:.0f}m"
+    elif total_sec == 0:
+        return "0"
+    else:
+        return f"{total_sec * 1e6:.0f}µ"
+
+def all_msgrs_outgoing_connections(target):
+    msgrs = dump_messengers(cluster, target, discover_messengers(cluster, target))
+
+    return {(c.async_connection.target_addr.type, c.async_connection.target_addr.addr, c.async_connection.target_addr.nonce):
+            (m_name, c.async_connection.tcp_info.tcpi_rtt)
+            for m_name, m in msgrs.items()
+            for c in m.connections
+            if c.async_connection.status.connected and m.direction(c.async_connection) == "OUT" and not m_name.startswith("hb_")
+            }
+
+def all_msgrs_listen(target):
+    msgrs = dump_messengers(cluster, target, discover_messengers(cluster, target))
+    return set([
+        (a.type, a.addr, a.nonce)
+        for m in msgrs.values()
+        for a in m.my_addrs.addrvec])
+
+result = defaultdict(list)
+for src_t in all_targets:
+    for dst_t in all_targets:
+        src_outgoing = all_msgrs_outgoing_connections(src_t)
+        dst_listen = all_msgrs_listen(dst_t)
+        connections = src_outgoing.keys() & dst_listen
+        for con in connections:
+            src_outgoing_data = src_outgoing[con]
+            result[(src_t, dst_t)].append(src_outgoing_data)
+
+fig, ax = plt.subplots()
+
+# X axis: destinations
+# Y axis: sources
+
+ax.set_title("Max RTT Source → Destination [seconds]")
+ax.set_xticks(range(n_targets), labels=(str(t) for t in all_targets), rotation=45, ha="right", rotation_mode="anchor", fontsize=8)
+ax.set_xlabel("Destination")
+ax.set_yticks(range(n_targets), labels=reversed([str(t) for t in all_targets]), fontsize=8)
+ax.set_ylabel("Source")
+ax.spines[:].set_visible(False)
+
+val_array=[[0 for i in range(n_targets)] for j in range(n_targets)]
+for x, dst in enumerate(all_targets):
+    for y, src in enumerate(reversed(all_targets)):
+        data = max([v[1] for v in result[(src, dst)]] + [timedelta(0)])
+        if src != dst:
+            ax.text(x, y, format_timedelta_compact(data), ha="center", va="center", fontsize=8, color="w")
+        val_array[y][x] = data.total_seconds()
+
+im = ax.imshow(val_array)
+fig.tight_layout()
+return fig
+
+#+end_src
+
+#+RESULTS:
+[[file:./rttmatrix.svg]]
