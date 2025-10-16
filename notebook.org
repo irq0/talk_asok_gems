@@ -1193,6 +1193,144 @@ return fig
 #+RESULTS:
 [[file:./upset.svg]]
 
+** Word Clouds
+#+name: word_cloud
+#+caption: Word Cloud Generator
+#+begin_src python :noweb no-export :results output verbatim  :python .venv/bin/python3
+import matplotlib.pyplot as plt
+from wordcloud import WordCloud, STOPWORDS
+import sys
+
+def wordcloud(data, colormap):
+    extra_stopwords = {
+        'dump', 'list', 'get', 'set', 'show', 'config', 'file', 'log',
+        'command', 'default', 'val', 'name', 'use', 'object', 'objects',
+        'used', 'entry', 'entries', 'will', 'can', 'may'
+    }
+    all_stopwords = STOPWORDS.union(extra_stopwords)
+    wordcloud = WordCloud(
+        width=1200, height=800,
+        background_color="white",
+        stopwords=all_stopwords,
+        min_font_size=10,
+        colormap=colormap,
+        collocations=False).generate(data)
+
+    plt.figure(figsize=(10,7), frameon=False)
+    plt.imshow(wordcloud)
+    plt.axis("off")
+    plt.tight_layout()
+    return plt
+#+end_src
+
+#+RESULTS: word_cloud
+
+*** Help All
+#+begin_src python :var tab=all_commands :noweb no-export :file "./wordcloud_help.svg" :results graphics file :python .venv/bin/python3
+<<word_cloud>>
+
+return wordcloud(
+    " ".join(
+        (help
+         for cmd, services, help, _ in tab
+         if len(help) > 2)),
+    "copper")
+#+end_src
+
+#+RESULTS:
+[[file:./wordcloud_help.svg]]
+
+*** All Commands
+#+begin_src python :var tab=all_commands :noweb no-export :file "./wordcloud_cmd.svg" :results graphics file :python .venv/bin/python3
+<<word_cloud>>
+
+return wordcloud(
+    " ".join(
+        (cmd
+         for cmd, services, help, _ in tab
+         if len(cmd) > 2)),
+    "copper")
+#+end_src
+
+#+RESULTS:
+[[file:./wordcloud_cmd.svg]]
+
+
+*** OSD
+#+begin_src python :var tab=all_commands :noweb no-export :file "./wordcloud_osd.svg" :results graphics file :python .venv/bin/python3
+<<word_cloud>>
+
+return wordcloud(
+    " ".join(
+        (cmd
+         for cmd, services, _help, _ in tab
+         if len(cmd) > 2 and "osd" in services)),
+    "Blues")
+#+end_src
+
+
+#+RESULTS:
+[[file:./wordcloud_osd.svg]]
+*** MON
+#+begin_src python :var tab=all_commands :noweb no-export :file "./wordcloud_mon.svg" :results graphics file :python .venv/bin/python3
+<<word_cloud>>
+
+return wordcloud(
+    " ".join(
+        (cmd
+         for cmd, services, _help, _ in tab
+         if len(cmd) > 2 and "mon" in services)),
+    "Reds")
+#+end_src
+
+#+RESULTS:
+[[file:./wordcloud_mon.svg]]
+
+*** MGR
+#+begin_src python :var tab=all_commands :noweb no-export :file "./wordcloud_mgr.svg" :results graphics file :python .venv/bin/python3
+<<word_cloud>>
+
+return wordcloud(
+    " ".join(
+        (cmd
+         for cmd, services, _help, _ in tab
+         if len(cmd) > 2 and "mgr" in services)),
+    "Purples")
+#+end_src
+
+#+RESULTS:
+[[file:./wordcloud_mgr.svg]]
+
+*** RGW
+#+begin_src python :var tab=all_commands :noweb no-export :file "./wordcloud_rgw.svg" :results graphics file :python .venv/bin/python3
+<<word_cloud>>
+
+return wordcloud(
+    " ".join(
+        (cmd
+         for cmd, services, _help, _ in tab
+         if len(cmd) > 2 and "rgw" in services)),
+    "OrRd")
+#+end_src
+
+#+RESULTS:
+[[file:./wordcloud_rgw.svg]]
+
+*** RGW
+#+begin_src python :var tab=all_commands :noweb no-export :file "./wordcloud_mds.svg" :results graphics file :python .venv/bin/python3
+<<word_cloud>>
+
+return wordcloud(
+    " ".join(
+        (cmd
+         for cmd, services, _help, _ in tab
+         if len(cmd) > 2 and "mds" in services)),
+    "RdPu")
+#+end_src
+
+#+RESULTS:
+[[file:./wordcloud_mds.svg]]
+
 
 ** Hidden Asok Commands
 - abort
