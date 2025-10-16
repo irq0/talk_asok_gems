@@ -706,6 +706,7 @@ for group, targets in get_inventory(cluster).items():
 return [(f"={k}=", v[0], v[1]) for k, v in help.items()]
 #+end_src
 
+#+name: all_commands
 #+RESULTS:
 | =bench=                                                  | (osd)                 | OSD benchmark: write <count> <size>-byte objects(with <obj_size> <obj_num>), (default count=1G default size=4MB). Results in log.                                                                                                                                                                                                                                    |     |
 | =bluefs debug_inject_read_zeros=                         | (osd)                 | Injects 8K zeros into next BlueFS read. Debug only.                                                                                                                                                                                                                                                                                                                  |     |
@@ -1165,6 +1166,34 @@ return sets
 | rgw \ (mgr∪osd∪mon∪mds) |  9 | =sync trace show=, =sync trace active=, =cache erase=, =cache list=, =cr dump=, =cache zap=, =sync trace active_short=, =sync trace history=, =cache inspect=                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | mon \ (mgr∪osd∪rgw∪mds) |  9 | =connection scores dump=, =sync_force=, =sessions=, =add_bootstrap_peer_hintv=, =mon_status=, =quorum exit=, =add_bootstrap_peer_hint=, =quorum enter=, =connection scores reset=                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | mgr \ (osd∪mon∪rgw∪mds) |  1 | =mgr_status=                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+** UpSet Plot
+#+begin_src python :var tab=all_commands :noweb no-export :file "./upset.svg" :results graphics file :python .venv/bin/python3
+import matplotlib.pyplot as plt
+import sys
+from upsetplot import from_memberships, UpSet
+
+def parse_groups(tab):
+    return [services.replace("(","").replace(")","").split()
+            for cmd, services, _help, _ in tab]
+
+groups = parse_groups(tab)
+print(groups[:10], file=sys.stderr)
+upset_data = from_memberships(groups)
+
+fig = plt.figure(figsize=(14,7))
+
+upset_plot = UpSet(
+    upset_data, sort_by="cardinality", show_counts=True, min_subset_size=1, subset_size="count"
+)
+upset_plot.plot(fig=fig)
+plt.tight_layout()
+return fig
+#+end_src
+
+#+RESULTS:
+[[file:./upset.svg]]
+
+
 ** Hidden Asok Commands
 - abort
 - assert
