@@ -1331,13 +1331,12 @@ return wordcloud(
 #+RESULTS:
 [[file:./wordcloud_mds.svg]]
 
-
 ** Hidden Asok Commands
 - abort
 - assert
 - leak_some_memory
 
-* One-Liners
+* Polish: One-Liners
 ** Configuration Overview
 #+begin_src bash :noweb no-export :results output verbatim
 <<env>>
@@ -1542,7 +1541,7 @@ hb_front_server
 ms_objecter
 #+end_example
 
-* RTT Matrix
+* Polish: RTT Matrix
 
 #+begin_src python :noweb no-export :file "./rttmatrix.svg" :results graphics file value :tangle rttmatrix.py :tangle rttmatrix.py
 <<simpleasok>>
@@ -1630,3 +1629,5 @@ return fig
 
 #+RESULTS:
 [[file:./rttmatrix.svg]]
+* Polish: cntop
+https://github.com/clyso/cntop
