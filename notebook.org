@@ -1541,6 +1541,44 @@ hb_front_server
 ms_objecter
 #+end_example
 
+* Polish: Simple Config Drift Detector
+#+caption: Number of runtime config changes
+#+begin_src python :noweb no-export :results output verbatim
+<<simpleasok>>
+
+from collections import defaultdict
+
+cluster = connect(pathlib.Path(ceph_config))
+target_commands = defaultdict(lambda :0)
+
+def filter_conf(k, vs):
+    return k not in ["fsid", "host", "no_config_file"] \
+        and vs["default"] != vs["final"] \
+            and not k.startswith("osd_recovery_sleep") \
+            and not k.startswith("osd_delete_sleep_") \
+            and not k.startswith("osd_snap_trim_sleep_")
+for group, targets in get_inventory(cluster).items():
+    for target in targets:
+        diff = command_json(cluster, target, prefix="config diff")["diff"]
+        drift = [vs for k, vs in diff.items() if "override" in vs and filter_conf(k, vs)]
+        print(f'ceph_config_drift{{target="{str(target)}"}} {len(drift)}')
+
+#+end_src
+
+#+RESULTS:
+#+begin_example
+ceph_config_drift{target="osd.0"} 0
+ceph_config_drift{target="osd.1"} 0
+ceph_config_drift{target="osd.2"} 0
+ceph_config_drift{target="mon.a"} 2
+ceph_config_drift{target="mon.b"} 0
+ceph_config_drift{target="mon.c"} 0
+ceph_config_drift{target="mgr.x"} 0
+ceph_config_drift{target="mds.a"} 0
+ceph_config_drift{target="mds.b"} 0
+ceph_config_drift{target="radosgw.8000.asok"} 1
+#+end_example
+
 * Polish: RTT Matrix
 
 #+begin_src python :noweb no-export :file "./rttmatrix.svg" :results graphics file value :tangle rttmatrix.py :tangle rttmatrix.py
