@@ -1193,7 +1193,7 @@ return fig
 #+RESULTS:
 [[file:./upset.svg]]
 
-** Word Clouds
+** Word Clouds - Postcards
 #+name: word_cloud
 #+caption: Word Cloud Generator
 #+begin_src python :noweb no-export :results output verbatim  :python .venv/bin/python3
@@ -1264,7 +1264,7 @@ return wordcloud(
     " ".join(
         (cmd
          for cmd, services, _help, _ in tab
-         if len(cmd) > 2 and "osd" in services)),
+         if len(cmd) > 2 and "osd" in services and not services == "(rgw mds mon osd mgr)")),
     "Blues")
 #+end_src
 
@@ -1272,14 +1272,15 @@ return wordcloud(
 #+RESULTS:
 [[file:./wordcloud_osd.svg]]
 *** MON
+
 #+begin_src python :var tab=all_commands :noweb no-export :file "./wordcloud_mon.svg" :results graphics file :python .venv/bin/python3
 <<word_cloud>>
 
 return wordcloud(
     " ".join(
-        (cmd
+        (cmd.replace("=", "")
          for cmd, services, _help, _ in tab
-         if len(cmd) > 2 and "mon" in services)),
+         if len(cmd) > 2 and "mon" in services and not services == "(rgw mds mon osd mgr)")),
     "Reds")
 #+end_src
 
@@ -1294,7 +1295,7 @@ return wordcloud(
     " ".join(
         (cmd
          for cmd, services, _help, _ in tab
-         if len(cmd) > 2 and "mgr" in services)),
+         if len(cmd) > 2 and "mgr" in services and not services == "(rgw mds mon osd mgr)")),
     "Purples")
 #+end_src
 
@@ -1309,7 +1310,7 @@ return wordcloud(
     " ".join(
         (cmd
          for cmd, services, _help, _ in tab
-         if len(cmd) > 2 and "rgw" in services)),
+         if len(cmd) > 2 and "rgw" in services and not services == "(rgw mds mon osd mgr)")),
     "OrRd")
 #+end_src
 
@@ -1324,7 +1325,7 @@ return wordcloud(
     " ".join(
         (cmd
          for cmd, services, _help, _ in tab
-         if len(cmd) > 2 and "mds" in services)),
+         if len(cmd) > 2 and "mds" in services and not  services == "(rgw mds mon osd mgr)")),
     "RdPu")
 #+end_src
 
