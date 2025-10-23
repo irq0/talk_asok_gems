@@ -28,7 +28,6 @@ repos:
       - id: check-merge-conflict
       - id: check-json
       - id: check-toml
-      - id: check-vcs-permalinks
       - id: mixed-line-ending
 
   - repo: https://github.com/codespell-project/codespell
