@@ -5,3 +5,6 @@ This is the companion org-mode notebook for the talk
 * Notebook
 - as [[./notebook.org][org-mode]] file
 - exported to [[https://irq0.github.io/talk_asok_gems/notebook.html][html]] with figures
+
+* Tools
+- https://github.com/clyso/cntop
